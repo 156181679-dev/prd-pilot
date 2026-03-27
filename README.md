@@ -1,53 +1,141 @@
-﻿# PRD Pilot
+# PRD Pilot
 
-> AI PRD and demo workspace for product managers.
+> AI workspace for product managers to turn ideas into Requirement Specs, PRDs, demo-ready HTML prototypes, and targeted iteration plans.
 
 [中文文档](docs/README.zh-CN.md)
 
-PRD Pilot helps product managers turn vague product ideas into a shared `Requirement Spec`, a reviewable PRD, a demo-ready HTML prototype, and targeted iteration plans.
+![PRD Pilot cover](docs/screenshots/readme-cover.png)
 
-**Core loop**
+## What It Solves
 
-`Idea -> Requirement Spec -> PRD / Demo / Prototype Outline -> Consistency Check -> Targeted Iteration`
+Most AI generators can output a PRD or a mockup quickly, but the result often breaks during review:
 
-## At a Glance
+- the PRD and demo drift apart
+- key pages or flows go missing
+- feedback turns into a full rewrite
 
-- Shared `Requirement Spec` as the single source of truth
-- Chinese PRD draft + single-file HTML demo from the same spec
-- Built-in consistency checks across PRD, demo, and prototype outline
-- Targeted iteration with scoped change summaries
-- In-browser model configuration for OpenAI-compatible APIs
+PRD Pilot keeps one shared `Requirement Spec` across generation, validation, and iteration so product ideas can move from vague input to reviewable output with less drift.
 
 ## Preview
 
-| Home | Requirement Spec |
-| --- | --- |
-| ![Home overview](docs/screenshots/home-overview.png) | ![Requirement Spec](docs/screenshots/requirement-spec.png) |
+| Requirement Spec | Demo Preview | Consistency Check |
+| --- | --- | --- |
+| ![Requirement Spec](docs/screenshots/requirement-spec.png) | ![Demo preview](docs/screenshots/demo-preview.png) | ![Consistency check](docs/screenshots/consistency-check.png) |
 
-| PRD | Demo |
-| --- | --- |
-| ![PRD output](docs/screenshots/prd-output.png) | ![Demo preview](docs/screenshots/demo-preview.png) |
+| PRD Draft | Targeted Iteration | Home Workspace |
+| --- | --- | --- |
+| ![PRD output](docs/screenshots/prd-output.png) | ![Targeted iteration](docs/screenshots/targeted-iteration.png) | ![Home overview](docs/screenshots/home-overview.png) |
 
-| Consistency Check | Targeted Iteration |
-| --- | --- |
-| ![Consistency check](docs/screenshots/consistency-check.png) | ![Targeted iteration](docs/screenshots/targeted-iteration.png) |
+## Quick Start
 
-## Why It Exists
+### 1. Start the backend
 
-Many AI tools can generate something quickly, but the outputs often drift:
+```bash
+cd prd-pilot/backend
+pip install -r requirements.txt
+copy .env.example .env
+python main.py
+```
 
-- the PRD says one thing
-- the demo shows another thing
-- the interaction flow breaks in review
-- feedback forces a full rewrite instead of a scoped edit
+Example `.env`:
 
-PRD Pilot is built to solve that gap.
+```env
+OPENAI_PROVIDER=deepseek
+OPENAI_API_KEY=your_deepseek_api_key_here
+OPENAI_BASE_URL=https://api.deepseek.com/v1
+OPENAI_MODEL=deepseek-chat
+OPENAI_MAX_TOKENS=0
+APP_HOST=0.0.0.0
+APP_PORT=8000
+```
 
-## Who It's For
+### 2. Start the frontend
 
-- student product managers who need to prepare requirement reviews quickly
-- indie developers who need to turn raw ideas into reviewable specs and demos
-- small teams without dedicated design or frontend prototyping support
+```bash
+cd prd-pilot/frontend
+npm install
+npm run dev
+```
+
+### 3. Open the app
+
+- Frontend: [http://localhost:5173](http://localhost:5173)
+- Backend health: [http://localhost:8000/api/health](http://localhost:8000/api/health)
+
+## Core Features
+
+### Shared Requirement Spec
+
+PRD Pilot first structures user input into a single internal spec:
+
+- `product_name`
+- `product_type`
+- `target_users`
+- `user_pain_points`
+- `core_scenarios`
+- `key_features`
+- `primary_pages`
+- `user_flow`
+- `style_preference`
+- `constraints`
+- `success_criteria`
+
+This spec becomes the shared source of truth for every later step.
+
+### PRD, Demo, and Prototype Outline
+
+- `PRD`: Chinese Markdown draft for requirement review
+- `Demo`: single-file HTML prototype for direct preview and download
+- `Prototype Outline`: page structure, flow, and validation goals
+
+### Consistency Check
+
+Built-in checks cover:
+
+- page coverage
+- feature coverage
+- flow connectivity
+- naming consistency
+- prototype alignment
+- scenario coverage
+
+### Targeted Iteration
+
+Instead of regenerating everything, PRD Pilot supports scoped updates such as:
+
+- add page
+- modify user
+- remove feature
+- adjust layout
+- change style
+- improve data density
+- simplify PRD
+- clarify flow
+
+Each iteration returns a short change summary.
+
+### In-Browser Model Configuration
+
+The UI supports page-level model configuration for OpenAI-compatible APIs:
+
+- provider
+- model name
+- API key
+- base URL
+- max tokens (optional; blank means auto)
+
+Built-in presets:
+
+- DeepSeek
+- OpenAI
+- OpenRouter
+- Zhipu / GLM
+- SiliconFlow
+- Moonshot
+- Groq
+- DashScope / Qwen
+- Ollama (Local)
+- Custom OpenAI Compatible
 
 ## Workflow
 
@@ -64,120 +152,11 @@ flowchart LR
     G --> B
 ```
 
-## Core Features
+## Who It's For
 
-### 1. Requirement Spec Layer
-
-PRD Pilot first normalizes user input into a shared internal structure:
-
-- `product_name`
-- `product_type`
-- `target_users`
-- `user_pain_points`
-- `core_scenarios`
-- `key_features`
-- `primary_pages`
-- `user_flow`
-- `style_preference`
-- `constraints`
-- `success_criteria`
-
-This spec becomes the single source of truth for generation, checking, and iteration.
-
-### 2. Generation
-
-- `PRD`: Chinese Markdown draft for requirement review
-- `Demo`: single-file HTML prototype for direct preview and download
-- `Prototype Outline`: page structure, flow, and validation goals
-
-### 3. Validation
-
-Built-in consistency checks include:
-
-- page coverage
-- feature coverage
-- flow connectivity
-- naming consistency
-- prototype alignment
-- scenario coverage
-
-### 4. Targeted Iteration
-
-Instead of redoing everything, PRD Pilot supports scoped updates such as:
-
-- add page
-- modify user
-- remove feature
-- adjust layout
-- change style
-- improve data density
-- simplify PRD
-- clarify flow
-
-Each iteration returns a short change summary.
-
-## Model Configuration
-
-PRD Pilot supports page-level model configuration. Users can open the top-right model dialog and provide:
-
-- provider
-- model name
-- API key
-- base URL
-- max tokens (optional; blank means auto)
-
-Built-in provider presets:
-
-- DeepSeek
-- OpenAI
-- OpenRouter
-- Zhipu / GLM
-- SiliconFlow
-- Moonshot
-- Groq
-- DashScope / Qwen
-- Ollama (Local)
-- Custom OpenAI Compatible
-
-The UI stores this configuration only in the current browser. It is not written back to the server.
-
-## Quick Start
-
-### 1. Backend
-
-```bash
-cd prd-pilot/backend
-pip install -r requirements.txt
-copy .env.example .env
-python main.py
-```
-
-Default example config:
-
-```env
-OPENAI_PROVIDER=deepseek
-OPENAI_API_KEY=your_deepseek_api_key_here
-OPENAI_BASE_URL=https://api.deepseek.com/v1
-OPENAI_MODEL=deepseek-chat
-OPENAI_MAX_TOKENS=0
-APP_HOST=0.0.0.0
-APP_PORT=8000
-```
-
-`OPENAI_MAX_TOKENS=0` means the backend will not explicitly pass `max_tokens` and will let the selected model use its available output limit.
-
-### 2. Frontend
-
-```bash
-cd prd-pilot/frontend
-npm install
-npm run dev
-```
-
-### 3. Open in Browser
-
-- Frontend: [http://localhost:5173](http://localhost:5173)
-- Backend health: [http://localhost:8000/api/health](http://localhost:8000/api/health)
+- student product managers who need to prepare requirement reviews quickly
+- indie developers who need reviewable specs and demo-ready prototypes
+- small teams without dedicated design or frontend prototyping support
 
 ## API
 
@@ -238,10 +217,6 @@ npm run dev
 - no image-based prototype generation yet
 - no persistent version rollback yet
 - consistency check v1 is rule-based, not AI-score-driven
-
-## Docs
-
-- Chinese guide: [docs/README.zh-CN.md](docs/README.zh-CN.md)
 
 ## License
 

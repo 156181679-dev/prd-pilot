@@ -1,5 +1,7 @@
 # PRD Pilot 中文文档
 
+[English README](../README.md)
+
 ## 项目定位
 
 PRD Pilot 是一个面向产品经理的 AI PRD 与 Demo 工作台，用来把模糊想法快速整理成：
