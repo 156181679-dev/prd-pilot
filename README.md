@@ -2,6 +2,8 @@
 
 > AI PRD and demo workspace for product managers.
 
+[中文文档](docs/README.zh-CN.md)
+
 PRD Pilot helps product managers turn vague product ideas into a shared `Requirement Spec`, a reviewable PRD, a demo-ready HTML prototype, and targeted iteration plans.
 
 **Core loop**
@@ -224,10 +226,9 @@ npm run dev
 │     ├─ package.json
 │     └─ vite.config.js
 ├─ docs/
+│  ├─ README.zh-CN.md
 │  └─ screenshots/
 ├─ README.md
-├─ 使用说明.md
-├─ PRD Pilot项目文档.md
 └─ LICENSE
 ```
 
@@ -238,11 +239,9 @@ npm run dev
 - no persistent version rollback yet
 - consistency check v1 is rule-based, not AI-score-driven
 
-## Open Source Assets
+## Docs
 
-- usage guide: [使用说明.md](使用说明.md)
-- project doc: [PRD Pilot项目文档.md](PRD%20Pilot项目文档.md)
-- GitHub release checklist: [GitHub发布素材清单.md](GitHub%E5%8F%91%E5%B8%83%E7%B4%A0%E6%9D%90%E6%B8%85%E5%8D%95.md)
+- Chinese guide: [docs/README.zh-CN.md](docs/README.zh-CN.md)
 
 ## License
 
