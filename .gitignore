@@ -1,0 +1,30 @@
+﻿# Env files
+.env
+.env.*
+!.env.example
+!.env*.example
+prd-pilot/backend/.env
+
+# Dependencies and build output
+node_modules/
+dist/
+.vite/
+prd-pilot/frontend/node_modules/
+prd-pilot/frontend/dist/
+prd-pilot/frontend/.vite/
+
+# Python cache
+__pycache__/
+*.pyc
+prd-pilot/backend/__pycache__/
+prd-pilot/backend/services/__pycache__/
+
+# Editor settings
+.vscode/
+.idea/
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db
+
