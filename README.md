@@ -2,15 +2,37 @@
 
 > AI PRD and demo workspace for product managers.
 
-PRD Pilot helps product managers turn vague product ideas into reviewable PRDs and demo-ready prototypes with AI.
+PRD Pilot helps product managers turn vague product ideas into a shared `Requirement Spec`, a reviewable PRD, a demo-ready HTML prototype, and targeted iteration plans.
 
-Core flow:
+**Core loop**
 
 `Idea -> Requirement Spec -> PRD / Demo / Prototype Outline -> Consistency Check -> Targeted Iteration`
 
-## Why PRD Pilot
+## At a Glance
 
-Many AI tools can generate "something" quickly, but the outputs often drift:
+- Shared `Requirement Spec` as the single source of truth
+- Chinese PRD draft + single-file HTML demo from the same spec
+- Built-in consistency checks across PRD, demo, and prototype outline
+- Targeted iteration with scoped change summaries
+- In-browser model configuration for OpenAI-compatible APIs
+
+## Preview
+
+| Home | Requirement Spec |
+| --- | --- |
+| ![Home overview](docs/screenshots/home-overview.png) | ![Requirement Spec](docs/screenshots/requirement-spec.png) |
+
+| PRD | Demo |
+| --- | --- |
+| ![PRD output](docs/screenshots/prd-output.png) | ![Demo preview](docs/screenshots/demo-preview.png) |
+
+| Consistency Check | Targeted Iteration |
+| --- | --- |
+| ![Consistency check](docs/screenshots/consistency-check.png) | ![Targeted iteration](docs/screenshots/targeted-iteration.png) |
+
+## Why It Exists
+
+Many AI tools can generate something quickly, but the outputs often drift:
 
 - the PRD says one thing
 - the demo shows another thing
@@ -24,15 +46,6 @@ PRD Pilot is built to solve that gap.
 - student product managers who need to prepare requirement reviews quickly
 - indie developers who need to turn raw ideas into reviewable specs and demos
 - small teams without dedicated design or frontend prototyping support
-
-## What It Does
-
-- structures raw input into a shared `Requirement Spec`
-- generates a Chinese PRD draft from the same spec
-- generates a single-file HTML demo and a prototype outline
-- checks consistency across PRD, demo, and outline
-- supports targeted iteration instead of blind full regeneration
-- supports in-browser model configuration with OpenAI-compatible APIs
 
 ## Workflow
 
@@ -72,7 +85,7 @@ This spec becomes the single source of truth for generation, checking, and itera
 ### 2. Generation
 
 - `PRD`: Chinese Markdown draft for requirement review
-- `Demo`: single-file HTML prototype for direct preview/download
+- `Demo`: single-file HTML prototype for direct preview and download
 - `Prototype Outline`: page structure, flow, and validation goals
 
 ### 3. Validation
@@ -126,45 +139,6 @@ Built-in provider presets:
 
 The UI stores this configuration only in the current browser. It is not written back to the server.
 
-## Tech Stack
-
-### Frontend
-
-- Vue 3
-- Vite
-- Element Plus
-- Tailwind CSS
-- MarkdownIt
-- VueUse
-
-### Backend
-
-- FastAPI
-- OpenAI-compatible API client
-- Pydantic
-- Python Dotenv
-
-## Project Structure
-
-```text
-.
-├─ prd-pilot/
-│  ├─ backend/
-│  │  ├─ main.py
-│  │  ├─ requirements.txt
-│  │  └─ services/
-│  │     └─ llm_service.py
-│  └─ frontend/
-│     ├─ src/
-│     │  └─ App.vue
-│     ├─ package.json
-│     └─ vite.config.js
-├─ README.md
-├─ 使用说明.md
-├─ PRD Pilot项目文档.md
-└─ LICENSE
-```
-
 ## Quick Start
 
 ### 1. Backend
@@ -198,7 +172,7 @@ npm install
 npm run dev
 ```
 
-### 3. Open in browser
+### 3. Open in Browser
 
 - Frontend: [http://localhost:5173](http://localhost:5173)
 - Backend health: [http://localhost:8000/api/health](http://localhost:8000/api/health)
@@ -216,6 +190,47 @@ npm run dev
 - `GET /api/health`
 - `GET /api/test-llm`
 
+## Tech Stack
+
+### Frontend
+
+- Vue 3
+- Vite
+- Element Plus
+- Tailwind CSS
+- MarkdownIt
+- VueUse
+
+### Backend
+
+- FastAPI
+- OpenAI-compatible API client
+- Pydantic
+- Python Dotenv
+
+## Project Structure
+
+```text
+.
+├─ prd-pilot/
+│  ├─ backend/
+│  │  ├─ main.py
+│  │  ├─ requirements.txt
+│  │  └─ services/
+│  │     └─ llm_service.py
+│  └─ frontend/
+│     ├─ src/
+│     │  └─ App.vue
+│     ├─ package.json
+│     └─ vite.config.js
+├─ docs/
+│  └─ screenshots/
+├─ README.md
+├─ 使用说明.md
+├─ PRD Pilot项目文档.md
+└─ LICENSE
+```
+
 ## Current Scope
 
 - prototype output is `HTML Demo + Prototype Outline`
@@ -223,17 +238,12 @@ npm run dev
 - no persistent version rollback yet
 - consistency check v1 is rule-based, not AI-score-driven
 
-## Recommended Next Assets For Open Source Release
+## Open Source Assets
 
-These are still worth adding before a public GitHub release page is considered complete:
-
-- screenshots or GIFs of the main workflow
-- 1 to 2 sample cases
-- a short demo video
+- usage guide: [使用说明.md](使用说明.md)
+- project doc: [PRD Pilot项目文档.md](PRD%20Pilot项目文档.md)
+- GitHub release checklist: [GitHub发布素材清单.md](GitHub%E5%8F%91%E5%B8%83%E7%B4%A0%E6%9D%90%E6%B8%85%E5%8D%95.md)
 
 ## License
 
 MIT
-
-
-

@@ -23,6 +23,7 @@ prd-pilot/backend/services/__pycache__/
 .vscode/
 .idea/
 .claude/
+output/
 
 # OS files
 .DS_Store

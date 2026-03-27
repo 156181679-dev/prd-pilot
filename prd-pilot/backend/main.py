@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from services.llm_service import get_llm_service, get_model_options
 
@@ -91,10 +91,11 @@ class ModelConfig(BaseModel):
 
 
 class ProductRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     brief: Optional[ProductBrief] = None
     requirement_spec: Optional[RequirementSpec] = None
     prd_content: Optional[str] = None
-    model_config: Optional[ModelConfig] = None
+    runtime_model_config: Optional[ModelConfig] = Field(default=None, alias="model_config")
 
 
 class ConsistencyRequest(BaseModel):
@@ -105,9 +106,10 @@ class ConsistencyRequest(BaseModel):
 
 
 class IterationRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     brief: Optional[ProductBrief] = None
     requirement_spec: Optional[RequirementSpec] = None
-    model_config: Optional[ModelConfig] = None
+    runtime_model_config: Optional[ModelConfig] = Field(default=None, alias="model_config")
     change_type: str = ""
     target_module: str = ""
     affected_pages: List[str] = Field(default_factory=list)
@@ -118,12 +120,14 @@ class IterationRequest(BaseModel):
 
 
 class RequirementOnlyRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     brief: ProductBrief
-    model_config: Optional[ModelConfig] = None
+    runtime_model_config: Optional[ModelConfig] = Field(default=None, alias="model_config")
 
 
 class ModelConfigRequest(BaseModel):
-    model_config: Optional[ModelConfig] = None
+    model_config = ConfigDict(populate_by_name=True)
+    runtime_model_config: Optional[ModelConfig] = Field(default=None, alias="model_config")
 
 
 def serialize_brief(brief: ProductBrief) -> dict:
@@ -218,7 +222,7 @@ async def test_llm():
 async def test_model_config(request: ModelConfigRequest):
     try:
         llm = get_llm_service()
-        result = llm.test_model_config(serialize_model_config(request.model_config))
+        result = llm.test_model_config(serialize_model_config(request.runtime_model_config))
         return {"success": True, "data": result, "message": "模型连接测试成功"}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -234,7 +238,7 @@ async def structure_requirement(request: RequirementOnlyRequest):
         llm_service = get_llm_service()
         requirement_spec = await llm_service.structure_requirement(
             serialize_brief(request.brief),
-            model_config=serialize_model_config(request.model_config),
+            model_config=serialize_model_config(request.runtime_model_config),
         )
         return {
             "success": True,
@@ -258,11 +262,11 @@ async def generate_prd(request: ProductRequest):
             llm_service,
             request.brief,
             request.requirement_spec,
-            request.model_config,
+            request.runtime_model_config,
         )
         prd_content = await llm_service.generate_prd(
             requirement_spec,
-            model_config=serialize_model_config(request.model_config),
+            model_config=serialize_model_config(request.runtime_model_config),
         )
         return {
             "success": True,
@@ -287,18 +291,18 @@ async def generate_demo(request: ProductRequest):
             llm_service,
             request.brief,
             request.requirement_spec,
-            request.model_config,
+            request.runtime_model_config,
         )
         demo_html = await llm_service.generate_demo_html(
             requirement_spec=requirement_spec,
             prd_content=request.prd_content,
-            model_config=serialize_model_config(request.model_config),
+            model_config=serialize_model_config(request.runtime_model_config),
         )
         prototype_outline = await llm_service.generate_prototype_outline(
             requirement_spec=requirement_spec,
             prd_content=request.prd_content,
             demo_html=demo_html,
-            model_config=serialize_model_config(request.model_config),
+            model_config=serialize_model_config(request.runtime_model_config),
         )
         return {
             "success": True,
@@ -353,7 +357,7 @@ async def iterate_prd(request: IterationRequest):
             llm_service,
             request.brief,
             request.requirement_spec,
-            request.model_config,
+            request.runtime_model_config,
         )
         change_request = {
             "change_type": request.change_type,
@@ -364,13 +368,13 @@ async def iterate_prd(request: IterationRequest):
         revised_requirement_spec = await llm_service.revise_requirement_spec(
             requirement_spec,
             change_request,
-            model_config=serialize_model_config(request.model_config),
+            model_config=serialize_model_config(request.runtime_model_config),
         )
         prd_content = await llm_service.iterate_prd(
             requirement_spec=revised_requirement_spec,
             current_prd=request.current_prd,
             change_request=change_request,
-            model_config=serialize_model_config(request.model_config),
+            model_config=serialize_model_config(request.runtime_model_config),
         )
         change_meta = llm_service.build_change_metadata(change_request, revised_requirement_spec)
         return {
@@ -401,7 +405,7 @@ async def iterate_demo(request: IterationRequest):
             llm_service,
             request.brief,
             request.requirement_spec,
-            request.model_config,
+            request.runtime_model_config,
         )
         change_request = {
             "change_type": request.change_type,
@@ -412,19 +416,19 @@ async def iterate_demo(request: IterationRequest):
         revised_requirement_spec = await llm_service.revise_requirement_spec(
             requirement_spec,
             change_request,
-            model_config=serialize_model_config(request.model_config),
+            model_config=serialize_model_config(request.runtime_model_config),
         )
         demo_html = await llm_service.iterate_demo_html(
             requirement_spec=revised_requirement_spec,
             current_demo_html=request.current_demo_html,
             change_request=change_request,
-            model_config=serialize_model_config(request.model_config),
+            model_config=serialize_model_config(request.runtime_model_config),
         )
         prototype_outline = await llm_service.generate_prototype_outline(
             requirement_spec=revised_requirement_spec,
             demo_html=demo_html,
             prd_content=request.current_prd,
-            model_config=serialize_model_config(request.model_config),
+            model_config=serialize_model_config(request.runtime_model_config),
         )
         change_meta = llm_service.build_change_metadata(change_request, revised_requirement_spec)
         return {
