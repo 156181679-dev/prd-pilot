@@ -114,6 +114,15 @@ Instead of regenerating everything, PRD Pilot supports scoped updates such as:
 
 Each iteration returns a short change summary.
 
+## Examples
+
+Two standard cases are included in `docs/examples/`:
+
+- [Campus Secondhand Marketplace](docs/examples/campus-secondhand-marketplace.md)
+- [AI Resume Optimizer](docs/examples/ai-resume-optimizer.md)
+
+Each case documents the input brief, Requirement Spec, PRD highlights, demo screenshot placeholder, and one targeted iteration round.
+
 ### In-Browser Model Configuration
 
 The UI supports page-level model configuration for OpenAI-compatible APIs:

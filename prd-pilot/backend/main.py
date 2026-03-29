@@ -293,11 +293,12 @@ async def generate_demo(request: ProductRequest):
             request.requirement_spec,
             request.runtime_model_config,
         )
-        demo_html = await llm_service.generate_demo_html(
+        demo_html_result = await llm_service.generate_demo_html(
             requirement_spec=requirement_spec,
             prd_content=request.prd_content,
             model_config=serialize_model_config(request.runtime_model_config),
         )
+        demo_html, demo_quality = demo_html_result
         prototype_outline = await llm_service.generate_prototype_outline(
             requirement_spec=requirement_spec,
             prd_content=request.prd_content,
@@ -310,6 +311,7 @@ async def generate_demo(request: ProductRequest):
                 "demo_html": demo_html,
                 "prototype_outline": prototype_outline,
                 "requirement_spec": requirement_spec,
+                "demo_quality": demo_quality,
                 "brief": serialize_brief(request.brief) if request.brief else None,
             },
             "message": "Demo 生成成功",
@@ -418,12 +420,14 @@ async def iterate_demo(request: IterationRequest):
             change_request,
             model_config=serialize_model_config(request.runtime_model_config),
         )
-        demo_html = await llm_service.iterate_demo_html(
+        demo_html_result = await llm_service.iterate_demo_html(
             requirement_spec=revised_requirement_spec,
             current_demo_html=request.current_demo_html,
             change_request=change_request,
+            prd_content=request.current_prd,
             model_config=serialize_model_config(request.runtime_model_config),
         )
+        demo_html, demo_quality = demo_html_result
         prototype_outline = await llm_service.generate_prototype_outline(
             requirement_spec=revised_requirement_spec,
             demo_html=demo_html,
@@ -437,6 +441,7 @@ async def iterate_demo(request: IterationRequest):
                 "demo_html": demo_html,
                 "prototype_outline": prototype_outline,
                 "requirement_spec": revised_requirement_spec,
+                "demo_quality": demo_quality,
                 **change_meta,
             },
             "message": "Demo 更新成功",

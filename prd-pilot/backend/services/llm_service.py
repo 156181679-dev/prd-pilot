@@ -276,6 +276,18 @@ DEMO_ITERATION_PROMPT = """你是一位前端原型工程师。
 """
 
 
+DEMO_REPAIR_PROMPT = """你是一位严格的 Demo 修复助手。
+你会收到当前 Requirement Spec、当前 PRD、当前 Demo HTML 以及一份质量门禁报告。
+请只输出修复后的完整 HTML。
+要求：
+1. 只返回完整 HTML，不要 Markdown，不要解释。
+2. 只修复质量门禁指出的问题，尽量保持已有主线、视觉和交互结构不变。
+3. 优先补齐 HTML 闭合、主线页面跳转、关键按钮交互和反馈状态。
+4. 若报告指出缺少主页面或关键状态，请将其补进现有 Demo，不要重写成全新项目。
+5. 修复后必须仍然是单文件 HTML，且包含 </body> 和 </html>。
+"""
+
+
 CONTINUE_HTML_SYSTEM_PROMPT = """你是一位严格的前端代码补全助手。
 你会收到一段被截断的 HTML，请只输出缺失的后续部分。
 要求：
@@ -585,6 +597,303 @@ class LLMService:
         lowered = html.lower()
         return "</body>" in lowered and "</html>" in lowered
 
+    def _count_regex(self, text: str, pattern: str, flags: int = re.IGNORECASE) -> int:
+        return len(re.findall(pattern, text or "", flags))
+
+    def _extract_visible_text(self, html: str) -> str:
+        stripped = re.sub(r"<script[\s\S]*?</script>", " ", html or "", flags=re.IGNORECASE)
+        stripped = re.sub(r"<style[\s\S]*?</style>", " ", stripped, flags=re.IGNORECASE)
+        stripped = re.sub(r"<[^>]+>", " ", stripped)
+        return re.sub(r"\s+", " ", stripped).strip()
+
+    def _dedupe_preserve_order(self, values: List[str]) -> List[str]:
+        ordered: List[str] = []
+        seen = set()
+        for value in values or []:
+            item = str(value).strip()
+            if not item or item in seen:
+                continue
+            ordered.append(item)
+            seen.add(item)
+        return ordered
+
+    def _build_demo_quality_issue(
+        self,
+        issue_type: str,
+        label: str,
+        severity: str,
+        evidence: str,
+        suggestion: str,
+        affected_pages: Optional[List[str]] = None,
+        change_type: Optional[str] = None,
+        target_module: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "type": issue_type,
+            "title": label,
+            "severity": severity,
+            "description": suggestion,
+            "evidence": evidence,
+            "suggestion": suggestion,
+            "change_type": change_type or "clarify_flow",
+            "target_module": target_module or "demo",
+            "affected_pages": self._dedupe_preserve_order(affected_pages or []),
+        }
+
+    def _build_demo_quality_action(self, issue: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "type": issue.get("type") or "demo_issue",
+            "label": issue.get("title") or issue.get("type") or "问题修复",
+            "evidence": issue.get("evidence") or "",
+            "instruction": issue.get("suggestion") or issue.get("description") or "",
+            "change_type": issue.get("change_type") or "clarify_flow",
+            "target_module": issue.get("target_module") or "demo",
+            "affected_pages": self._dedupe_preserve_order(issue.get("affected_pages") or []),
+        }
+
+    def _assess_demo_quality(
+        self,
+        requirement_spec: Dict[str, Any],
+        html: str,
+        prd_content: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        spec = self._normalize_spec(requirement_spec, requirement_spec)
+        visible_text = self._extract_visible_text(html)
+        lowered_html = (html or "").lower()
+        lowered_text = self._normalize_text(visible_text)
+
+        checks: List[Dict[str, Any]] = []
+        issues: List[Dict[str, Any]] = []
+        repair_actions: List[Dict[str, Any]] = []
+
+        def add_check(check_id: str, label: str, status: str, summary: str, evidence: str, matched: Optional[List[str]] = None, missing: Optional[List[str]] = None):
+            checks.append({
+                "id": check_id,
+                "label": label,
+                "status": status,
+                "summary": summary,
+                "evidence": evidence,
+                "matched": matched or [],
+                "missing": missing or [],
+            })
+
+        complete_html = self._is_complete_html(html)
+        add_check(
+            "html_integrity",
+            "HTML 完整性",
+            "pass" if complete_html else "fail",
+            "HTML 闭合标签是否完整。",
+            "已包含 </body> 和 </html>" if complete_html else "缺少 </body> 或 </html>。",
+            matched=["</body>", "</html>"] if complete_html else [],
+            missing=[] if complete_html else ["</body>", "</html>"],
+        )
+        if not complete_html:
+            issues.append(self._build_demo_quality_issue(
+                issue_type="html_incomplete",
+                label="HTML 结构不完整",
+                severity="high",
+                evidence="Demo 末尾未闭合 </body> 或 </html>。",
+                suggestion="先补齐 HTML 闭合结构，再检查主流程和交互。",
+                change_type="clarify_flow",
+                target_module="demo",
+            ))
+
+        button_count = self._count_regex(html, r"<button\b")
+        action_signal_patterns = [
+            r"onclick\s*=",
+            r"addEventListener\s*\(",
+            r"data-view\s*=",
+            r"data-step\s*=",
+            r"data-state\s*=",
+            r"classList\.",
+            r"currentStep",
+            r"activeView",
+            r"switchView",
+            r"show[A-Z]",
+            r"history\.pushState",
+            r"hashchange",
+        ]
+        interaction_signals = sum(1 for pattern in action_signal_patterns if re.search(pattern, html or "", re.IGNORECASE))
+        action_status = "pass" if button_count >= 2 and interaction_signals >= 3 else "warning" if button_count >= 1 and interaction_signals >= 2 else "fail"
+        add_check(
+            "interaction_signals",
+            "关键按钮交互",
+            action_status,
+            "主要按钮是否都具备真实交互和状态切换。",
+            f"按钮数 {button_count}，交互信号 {interaction_signals} 个。",
+            matched=[f"button:{button_count}", f"signals:{interaction_signals}"],
+            missing=[] if action_status == "pass" else ["关键按钮缺少真实交互或状态切换"],
+        )
+        if action_status != "pass":
+            issues.append(self._build_demo_quality_issue(
+                issue_type="missing_interaction",
+                label="关键按钮交互不足",
+                severity="high" if action_status == "fail" else "medium",
+                evidence=f"按钮数 {button_count}，交互信号 {interaction_signals} 个。",
+                suggestion="为首页主按钮、登录/注册/开始使用等入口补齐真实点击响应和视图切换。",
+                change_type="clarify_flow",
+                target_module="demo",
+            ))
+
+        page_hits = [page for page in spec["primary_pages"] if self._contains_phrase(html, page) or self._contains_phrase(visible_text, page)]
+        flow_keywords = [
+            "总览", "首页", "任务", "详情", "结果", "反馈", "评审", "草稿", "通过", "驳回", "空状态", "状态", "loading", "success", "error",
+        ]
+        flow_hits = sum(1 for keyword in flow_keywords if self._contains_phrase(html, keyword) or self._contains_phrase(visible_text, keyword))
+        flow_status = "pass" if len(page_hits) >= max(2, min(3, len(spec["primary_pages"]))) and flow_hits >= 4 else "warning" if page_hits else "fail"
+        add_check(
+            "flow_connectivity",
+            "主线连通",
+            flow_status,
+            "首页、核心任务页、结果反馈页是否构成可演示主线。",
+            f"命中页面 {page_hits or ['未命中明显页面']}；流程/状态关键词 {flow_hits} 个。",
+            matched=page_hits,
+            missing=[page for page in spec["primary_pages"] if page not in page_hits],
+        )
+        if flow_status != "pass":
+            issues.append(self._build_demo_quality_issue(
+                issue_type="flow_disconnected",
+                label="主线页面连通不足",
+                severity="high" if flow_status == "fail" else "medium",
+                evidence=f"页面命中 {page_hits or ['未命中明显页面']}，流程/状态关键词 {flow_hits} 个。",
+                suggestion="把首页、核心任务页和结果/反馈页串成完整路径，避免页面彼此孤立。",
+                change_type="clarify_flow",
+                target_module="demo",
+                affected_pages=page_hits or spec["primary_pages"][:2],
+            ))
+
+        feedback_keywords = ["草稿", "评审", "通过", "驳回", "待处理", "待确认", "空状态", "暂无", "success", "warning", "error", "loading"]
+        feedback_hits = [keyword for keyword in feedback_keywords if self._contains_phrase(html, keyword) or self._contains_phrase(visible_text, keyword)]
+        feedback_status = "pass" if len(feedback_hits) >= 3 else "warning" if len(feedback_hits) >= 1 else "fail"
+        add_check(
+            "feedback_states",
+            "反馈状态覆盖",
+            feedback_status,
+            "Demo 是否体现草稿、评审、通过、失败、空状态等反馈。",
+            f"命中反馈状态关键词：{feedback_hits or ['无']}",
+            matched=feedback_hits,
+            missing=[] if feedback_hits else ["草稿 / 评审 / 通过 / 反馈状态"],
+        )
+        if feedback_status != "pass":
+            issues.append(self._build_demo_quality_issue(
+                issue_type="missing_feedback_state",
+                label="反馈状态覆盖不足",
+                severity="medium" if feedback_status == "warning" else "high",
+                evidence=f"命中反馈状态关键词：{feedback_hits or ['无']}",
+                suggestion="补齐提交后、评审中、已通过、已驳回、空状态等反馈态，让 Demo 更像真实产品。",
+                change_type="adjust_layout",
+                target_module="demo",
+                affected_pages=page_hits or spec["primary_pages"][:1],
+            ))
+
+        expected_features = spec["key_features"][:]
+        feature_hits = [feature for feature in expected_features if self._contains_phrase(html, feature) or self._contains_phrase(visible_text, feature) or (prd_content and self._contains_phrase(prd_content, feature))]
+        feature_status = self._ratio_status(feature_hits, expected_features)
+        add_check(
+            "feature_alignment",
+            "功能映射",
+            feature_status,
+            f"Demo / PRD 对关键功能的映射覆盖 {len(feature_hits)}/{len(expected_features)} 项。",
+            f"命中功能：{feature_hits or ['无']}",
+            matched=feature_hits,
+            missing=[feature for feature in expected_features if feature not in feature_hits],
+        )
+        if feature_status != "pass":
+            issues.append(self._build_demo_quality_issue(
+                issue_type="feature_gap",
+                label="关键功能映射不足",
+                severity="medium" if feature_status == "warning" else "high",
+                evidence=f"命中功能：{feature_hits or ['无']}",
+                suggestion="让 Demo 和 PRD 共同体现关键功能，避免只在文案里出现。",
+                change_type="clarify_flow",
+                target_module="prd",
+                affected_pages=page_hits or spec["primary_pages"][:1],
+            ))
+
+        weights = {"pass": 1.0, "warning": 0.65, "fail": 0.0}
+        raw_score = sum(weights.get(item["status"], 0.0) for item in checks) / max(len(checks), 1)
+        score = round(raw_score * 100)
+        if complete_html and button_count >= 2 and interaction_signals >= 3 and len(page_hits) >= 2 and len(feedback_hits) >= 2:
+            score = min(100, max(score, 85))
+        overall_level = "high" if score >= 85 else "medium" if score >= 60 else "low"
+
+        repair_actions = [self._build_demo_quality_action(issue) for issue in issues]
+        repair_suggestions = [action["instruction"] for action in repair_actions if action["instruction"]]
+
+        return {
+            "status": "pass" if score >= 75 and not any(issue["severity"] == "high" for issue in issues) else "warning" if score >= 60 else "fail",
+            "overall_level": overall_level,
+            "score": score,
+            "checks": checks,
+            "issues": issues,
+            "repair_suggestions": self._dedupe_preserve_order(repair_suggestions),
+            "repair_actions": repair_actions,
+            "html_complete": complete_html,
+            "button_count": button_count,
+            "interaction_signals": interaction_signals,
+            "page_hits": page_hits,
+            "feedback_hits": feedback_hits,
+        }
+
+    def _repair_demo_html_once(
+        self,
+        requirement_spec: Dict[str, Any],
+        current_html: str,
+        quality_report: Dict[str, Any],
+        prd_content: Optional[str] = None,
+        model_config: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        user_prompt = f"""
+当前 Requirement Spec：
+{self.format_requirement_spec(requirement_spec)}
+
+当前 PRD：
+{prd_content or '暂无 PRD'}
+
+当前 Demo HTML：
+{current_html}
+
+质量门禁报告：
+{json.dumps(quality_report, ensure_ascii=False, indent=2)}
+
+请只修复上述问题，输出修复后的完整 HTML。
+"""
+        repaired = self._chat(DEMO_REPAIR_PROMPT, user_prompt, model_config=model_config)
+        return self._clean_code_fence(repaired)
+
+    def _finalize_demo_html(
+        self,
+        requirement_spec: Dict[str, Any],
+        raw_html: str,
+        prd_content: Optional[str] = None,
+        model_config: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[str, Dict[str, Any]]:
+        cleaned = self._clean_code_fence(raw_html)
+        completed = self._complete_html_if_needed(cleaned, model_config=model_config)
+        quality_report = self._assess_demo_quality(requirement_spec, completed, prd_content=prd_content)
+        if quality_report["status"] == "pass":
+            return completed, quality_report
+
+        repaired = self._repair_demo_html_once(
+            requirement_spec=requirement_spec,
+            current_html=completed,
+            quality_report=quality_report,
+            prd_content=prd_content,
+            model_config=model_config,
+        )
+        repaired_completed = self._complete_html_if_needed(repaired, model_config=model_config)
+        repaired_report = self._assess_demo_quality(requirement_spec, repaired_completed, prd_content=prd_content)
+        if repaired_report["status"] == "pass":
+            repaired_report["auto_repair_applied"] = True
+            repaired_report["repair_count"] = 1
+            return repaired_completed, repaired_report
+
+        issue_lines = []
+        for issue in repaired_report["issues"][:3]:
+            evidence = issue.get("evidence") or issue.get("description") or ""
+            issue_lines.append(f"- {issue.get('title') or issue.get('type')}: {evidence}")
+        raise ValueError("Demo 质量门禁未通过，已尝试自动修复一次仍未达标。当前问题：\n" + "\n".join(issue_lines))
+
     def _append_non_overlapping(self, base: str, addition: str) -> str:
         if not addition:
             return base
@@ -718,7 +1027,7 @@ class LLMService:
         requirement_spec: Dict[str, Any],
         prd_content: Optional[str] = None,
         model_config: Optional[Dict[str, Any]] = None,
-    ) -> str:
+    ) -> Tuple[str, Dict[str, Any]]:
         style_guidance = self.get_style_guidance(requirement_spec.get("style_preference"))
         user_prompt = f"""
 请基于以下 Requirement Spec 生成 Demo：
@@ -733,8 +1042,12 @@ PRD：
 """
         try:
             html = self._chat(DEMO_SYSTEM_PROMPT, user_prompt, model_config=model_config)
-            cleaned = self._clean_code_fence(html)
-            return self._complete_html_if_needed(cleaned, model_config=model_config)
+            return self._finalize_demo_html(
+                requirement_spec=requirement_spec,
+                raw_html=html,
+                prd_content=prd_content,
+                model_config=model_config,
+            )
         except Exception as exc:
             print(f"Demo generation error: {exc}", file=sys.stderr)
             raise Exception(f"Demo 生成失败: {exc}")
@@ -795,8 +1108,9 @@ Demo HTML：
         requirement_spec: Dict[str, Any],
         current_demo_html: str,
         change_request: Dict[str, Any],
+        prd_content: Optional[str] = None,
         model_config: Optional[Dict[str, Any]] = None,
-    ) -> str:
+    ) -> Tuple[str, Dict[str, Any]]:
         style_guidance = self.get_style_guidance(requirement_spec.get("style_preference"))
         user_prompt = f"""
 最新 Requirement Spec：
@@ -812,8 +1126,12 @@ Demo HTML：
 """
         try:
             html = self._chat(DEMO_ITERATION_PROMPT, user_prompt, model_config=model_config)
-            cleaned = self._clean_code_fence(html)
-            return self._complete_html_if_needed(cleaned, model_config=model_config)
+            return self._finalize_demo_html(
+                requirement_spec=requirement_spec,
+                raw_html=html,
+                prd_content=prd_content,
+                model_config=model_config,
+            )
         except Exception as exc:
             print(f"Demo iteration error: {exc}", file=sys.stderr)
             raise Exception(f"Demo 更新失败: {exc}")
@@ -861,6 +1179,30 @@ Demo HTML：
             "missing": missing,
         }
 
+    def _build_consistency_issue(
+        self,
+        issue_type: str,
+        title: str,
+        severity: str,
+        evidence: str,
+        suggestion: str,
+        description: Optional[str] = None,
+        affected_pages: Optional[List[str]] = None,
+        target_module: Optional[str] = None,
+        change_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "type": issue_type,
+            "title": title,
+            "severity": severity,
+            "description": description or suggestion,
+            "evidence": evidence,
+            "suggestion": suggestion,
+            "affected_pages": self._dedupe_preserve_order(affected_pages or []),
+            "target_module": target_module or "demo",
+            "change_type": change_type or "clarify_flow",
+        }
+
     def check_consistency(
         self,
         requirement_spec: Dict[str, Any],
@@ -877,6 +1219,7 @@ Demo HTML：
         checks = []
         issues = []
         repair_suggestions: List[str] = []
+        repair_actions: List[Dict[str, Any]] = []
 
         matched_pages, missing_pages = self._match_items(spec["primary_pages"], demo_source)
         page_status = self._ratio_status(matched_pages, spec["primary_pages"])
@@ -891,14 +1234,20 @@ Demo HTML：
             )
         )
         if missing_pages:
-            issues.append(
-                {
-                    "title": "Demo 页面覆盖不足",
-                    "severity": "high" if page_status == "fail" else "medium",
-                    "description": f"以下主要页面尚未在 Demo 或原型说明中体现：{', '.join(missing_pages)}。",
-                }
+            issue = self._build_consistency_issue(
+                issue_type="page_missing",
+                title="Demo 页面覆盖不足",
+                severity="high" if page_status == "fail" else "medium",
+                evidence=f"缺失页面：{', '.join(missing_pages)}。",
+                suggestion=f"在 Demo 中补齐这些主要页面，并让它们进入主流程：{', '.join(missing_pages)}。",
+                description=f"以下主要页面尚未在 Demo 或原型说明中体现：{', '.join(missing_pages)}。",
+                affected_pages=missing_pages,
+                target_module="demo",
+                change_type="add_page",
             )
-            repair_suggestions.append(f"在 Demo 中补齐这些主要页面，并让它们进入主流程：{', '.join(missing_pages)}。")
+            issues.append(issue)
+            repair_actions.append(self._build_demo_quality_action(issue))
+            repair_suggestions.append(issue["suggestion"])
 
         matched_features_prd, missing_features_prd = self._match_items(spec["key_features"], prd_source)
         matched_features_demo, missing_features_demo = self._match_items(spec["key_features"], demo_source)
@@ -916,14 +1265,20 @@ Demo HTML：
             )
         )
         if feature_missing:
-            issues.append(
-                {
-                    "title": "功能描述与页面表现不一致",
-                    "severity": "high" if feature_status == "fail" else "medium",
-                    "description": f"以下关键功能未同时出现在 PRD 与 Demo 中：{', '.join(feature_missing)}。",
-                }
+            issue = self._build_consistency_issue(
+                issue_type="feature_gap",
+                title="功能描述与页面表现不一致",
+                severity="high" if feature_status == "fail" else "medium",
+                evidence=f"未同时覆盖功能：{', '.join(feature_missing)}。",
+                suggestion=f"让 PRD 与 Demo 同步覆盖这些关键功能：{', '.join(feature_missing)}。",
+                description=f"以下关键功能未同时出现在 PRD 与 Demo 中：{', '.join(feature_missing)}。",
+                affected_pages=spec["primary_pages"][:2] or feature_missing[:1],
+                target_module="prd",
+                change_type="clarify_flow",
             )
-            repair_suggestions.append(f"让 PRD 与 Demo 同步覆盖这些关键功能：{', '.join(feature_missing)}。")
+            issues.append(issue)
+            repair_actions.append(self._build_demo_quality_action(issue))
+            repair_suggestions.append(issue["suggestion"])
 
         flow_signals = sum(
             1
@@ -943,14 +1298,20 @@ Demo HTML：
             )
         )
         if flow_status != "pass":
-            issues.append(
-                {
-                    "title": "Demo 主流程不够连通",
-                    "severity": "high" if flow_status == "fail" else "medium",
-                    "description": "Demo 中主要页面之间的跳转或状态切换不足，难以支撑完整演示。",
-                }
+            issue = self._build_consistency_issue(
+                issue_type="flow_break",
+                title="Demo 主流程不够连通",
+                severity="high" if flow_status == "fail" else "medium",
+                evidence=f"检测到 {flow_signals} 个交互信号，主线缺失：{', '.join(flow_missing) if flow_missing else '无'}。",
+                suggestion="为首页、核心任务页和结果页补齐可点击主线，确保按钮点击后能进入下一步视图。",
+                description="Demo 中主要页面之间的跳转或状态切换不足，难以支撑完整演示。",
+                affected_pages=spec["primary_pages"][:3],
+                target_module="demo",
+                change_type="clarify_flow",
             )
-            repair_suggestions.append("为首页、核心任务页和结果页补齐可点击主线，确保按钮点击后能进入下一步视图。")
+            issues.append(issue)
+            repair_actions.append(self._build_demo_quality_action(issue))
+            repair_suggestions.append(issue["suggestion"])
 
         naming_items = spec["primary_pages"] + spec["key_features"]
         matched_naming_outline, _ = self._match_items(naming_items, prototype_outline)
@@ -969,14 +1330,20 @@ Demo HTML：
             )
         )
         if naming_missing:
-            issues.append(
-                {
-                    "title": "命名未完全统一",
-                    "severity": "medium",
-                    "description": f"这些页面或功能名称在 PRD / 原型说明中不够一致：{', '.join(naming_missing)}。",
-                }
+            issue = self._build_consistency_issue(
+                issue_type="naming_drift",
+                title="命名未完全统一",
+                severity="medium",
+                evidence=f"不一致名称：{', '.join(naming_missing)}。",
+                suggestion="统一 PRD、原型说明和 Demo 中的页面名、功能名和状态名，避免同义混用。",
+                description=f"这些页面或功能名称在 PRD / 原型说明中不够一致：{', '.join(naming_missing)}。",
+                affected_pages=spec["primary_pages"][:2] or naming_missing[:1],
+                target_module="prd",
+                change_type="clarify_flow",
             )
-            repair_suggestions.append("统一 PRD、原型说明和 Demo 中的页面名、功能名和状态名，避免同义混用。")
+            issues.append(issue)
+            repair_actions.append(self._build_demo_quality_action(issue))
+            repair_suggestions.append(issue["suggestion"])
 
         outline_reference = spec["primary_pages"] + spec["core_scenarios"]
         matched_outline, missing_outline = self._match_items(outline_reference, prototype_outline, demo_source)
@@ -992,14 +1359,20 @@ Demo HTML：
             )
         )
         if missing_outline:
-            issues.append(
-                {
-                    "title": "原型说明覆盖不足",
-                    "severity": "medium",
-                    "description": f"这些页面或场景没有在原型说明中清楚体现：{', '.join(missing_outline)}。",
-                }
+            issue = self._build_consistency_issue(
+                issue_type="prototype_gap",
+                title="原型说明覆盖不足",
+                severity="medium",
+                evidence=f"缺失页面或场景：{', '.join(missing_outline)}。",
+                suggestion="在原型说明中补充页面结构、操作路径和验证目标，覆盖遗漏的核心场景。",
+                description=f"这些页面或场景没有在原型说明中清楚体现：{', '.join(missing_outline)}。",
+                affected_pages=missing_outline,
+                target_module="prototype_outline",
+                change_type="clarify_flow",
             )
-            repair_suggestions.append("在原型说明中补充页面结构、操作路径和验证目标，覆盖遗漏的核心场景。")
+            issues.append(issue)
+            repair_actions.append(self._build_demo_quality_action(issue))
+            repair_suggestions.append(issue["suggestion"])
 
         matched_scenarios, missing_scenarios = self._match_items(spec["core_scenarios"], prd_source, prototype_outline)
         scenario_status = self._ratio_status(matched_scenarios, spec["core_scenarios"])
@@ -1014,14 +1387,20 @@ Demo HTML：
             )
         )
         if missing_scenarios:
-            issues.append(
-                {
-                    "title": "核心场景存在遗漏",
-                    "severity": "medium",
-                    "description": f"这些核心场景尚未在 PRD 或原型说明中展开：{', '.join(missing_scenarios)}。",
-                }
+            issue = self._build_consistency_issue(
+                issue_type="scenario_gap",
+                title="核心场景存在遗漏",
+                severity="medium",
+                evidence=f"缺失场景：{', '.join(missing_scenarios)}。",
+                suggestion=f"在 PRD 和原型说明中补充这些核心场景的验证方式：{', '.join(missing_scenarios)}。",
+                description=f"这些核心场景尚未在 PRD 或原型说明中展开：{', '.join(missing_scenarios)}。",
+                affected_pages=spec["primary_pages"][:2],
+                target_module="prd",
+                change_type="clarify_flow",
             )
-            repair_suggestions.append(f"在 PRD 和原型说明中补充这些核心场景的验证方式：{', '.join(missing_scenarios)}。")
+            issues.append(issue)
+            repair_actions.append(self._build_demo_quality_action(issue))
+            repair_suggestions.append(issue["suggestion"])
 
         weights = {
             "pass": 1.0,
@@ -1044,22 +1423,33 @@ Demo HTML：
             "checks": checks,
             "issues": issues,
             "repair_suggestions": deduped_suggestions,
+            "repair_actions": repair_actions,
         }
 
     def build_change_metadata(self, change_request: Dict[str, Any], requirement_spec: Dict[str, Any]) -> Dict[str, Any]:
         change_type = (change_request.get("change_type") or "").strip()
         change_label = CHANGE_TYPE_LABELS.get(change_type, "定点修改")
         target_module = (change_request.get("target_module") or "未指定模块").strip()
-        affected_pages = change_request.get("affected_pages") or []
+        affected_pages = self._dedupe_preserve_order(change_request.get("affected_pages") or [])
         changed_sections = CHANGE_SECTION_HINTS.get(change_type, ["关键模块", "用户操作路径"])
-
-        if not affected_pages and change_type == "add_page":
-            affected_pages = requirement_spec.get("primary_pages", [])[-1:]
+        if not affected_pages:
+            if change_type == "add_page":
+                affected_pages = requirement_spec.get("primary_pages", [])[-1:]
+            elif change_type in {"clarify_flow", "adjust_layout"}:
+                affected_pages = requirement_spec.get("primary_pages", [])[:2]
+            elif change_type == "change_style":
+                affected_pages = requirement_spec.get("primary_pages", [])[:2]
+            elif change_type == "remove_feature":
+                affected_pages = requirement_spec.get("primary_pages", [])[:1]
 
         page_text = f"，涉及页面：{', '.join(affected_pages)}" if affected_pages else ""
-        change_summary = f"已按“{change_label}”更新 {target_module}{page_text}。"
+        section_text = f"，重点调整：{', '.join(changed_sections)}" if changed_sections else ""
+        change_summary = f"已按“{change_label}”更新 {target_module}{page_text}{section_text}。"
 
         return {
+            "change_type": change_type,
+            "change_label": change_label,
+            "target_module": target_module,
             "change_summary": change_summary,
             "changed_sections": changed_sections,
             "affected_pages": affected_pages,

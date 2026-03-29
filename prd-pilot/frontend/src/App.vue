@@ -46,7 +46,7 @@ const specEditor = reactive({
   key_features: '', primary_pages: '', user_flow: '', style_preference: '', constraints: '', success_criteria: ''
 })
 const iterationForm = reactive({ change_type: 'clarify_flow', target_module: 'demo', affected_pages: [], instruction: '' })
-const result = reactive({ prd: '', demoHtml: '', prototypeOutline: '', consistency: null, changeSummary: '', changedSections: [], affectedPages: [] })
+const result = reactive({ prd: '', demoHtml: '', prototypeOutline: '', demoQuality: null, consistency: null, changeSummary: '', changedSections: [], affectedPages: [] })
 
 const styleOptions = [
   { label: '不限定', value: '' },
@@ -209,7 +209,24 @@ function validateInput() {
 }
 function formatConsistency() {
   if (!result.consistency) return ''
-  return [`一致性等级：${result.consistency.overall_level}`, `一致性评分：${result.consistency.score}`, '', ...result.consistency.checks.map((item) => `- ${item.label} [${item.status}] ${item.summary}`)].join('\n')
+  const lines = [`一致性等级：${result.consistency.overall_level}`, `一致性评分：${result.consistency.score}`, '']
+  result.consistency.checks.forEach((item) => {
+    lines.push(`- ${item.label} [${item.status}] ${item.summary}`)
+    if (item.evidence) lines.push(`  证据：${item.evidence}`)
+    if (item.missing?.length) lines.push(`  缺失：${item.missing.join('、')}`)
+  })
+  if (result.consistency.issues?.length) {
+    lines.push('', '问题列表：')
+    result.consistency.issues.forEach((issue) => {
+      lines.push(`- ${issue.title}（${issue.severity}）${issue.description}`)
+      if (issue.evidence) lines.push(`  证据：${issue.evidence}`)
+      if (issue.suggestion) lines.push(`  建议：${issue.suggestion}`)
+    })
+  }
+  return lines.join('\n')
+}
+function statusText(value) {
+  return { pass: '通过', warning: '警告', fail: '失败' }[value] || value || ''
 }
 async function callApi(path, payload) {
   const response = await fetch(`${API_BASE}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
@@ -294,6 +311,7 @@ async function generateDemo() {
     applyRequirementSpec(data.requirement_spec)
     result.demoHtml = data.demo_html
     result.prototypeOutline = data.prototype_outline
+    result.demoQuality = data.demo_quality || null
     demoView.value = 'preview'
     outputTab.value = 'demo'
     ElMessage.success('Demo 与原型说明已生成。')
@@ -320,9 +338,21 @@ function applyChangeMeta(data) {
   result.affectedPages = data.affected_pages || []
 }
 function applyRepairSuggestion(suggestion) {
-  iterationForm.instruction = suggestion
-  iterationForm.change_type = suggestion.includes('页面') ? 'add_page' : suggestion.includes('风格') ? 'change_style' : suggestion.includes('功能') ? 'remove_feature' : suggestion.includes('数据') ? 'improve_data_density' : 'clarify_flow'
-  iterationForm.target_module = suggestion.includes('PRD') ? 'prd' : 'demo'
+  const action = typeof suggestion === 'string'
+    ? { instruction: suggestion, change_type: '', target_module: '', affected_pages: [] }
+    : suggestion || {}
+  const instruction = action.instruction || action.suggestion || action.description || ''
+  iterationForm.instruction = instruction
+  iterationForm.change_type = action.change_type || (
+    instruction.includes('页面') ? 'add_page'
+      : instruction.includes('风格') ? 'change_style'
+        : instruction.includes('功能') ? 'remove_feature'
+          : instruction.includes('数据') ? 'improve_data_density'
+            : instruction.includes('流程') ? 'clarify_flow'
+              : 'clarify_flow'
+  )
+  iterationForm.target_module = action.target_module || (instruction.includes('PRD') ? 'prd' : 'demo')
+  iterationForm.affected_pages = Array.isArray(action.affected_pages) ? action.affected_pages : []
   ElMessage.success('修复建议已带入修改区。')
 }
 async function iteratePrd() {
@@ -359,6 +389,7 @@ async function iterateDemo() {
     applyRequirementSpec(data.requirement_spec)
     result.demoHtml = data.demo_html
     result.prototypeOutline = data.prototype_outline
+    result.demoQuality = data.demo_quality || null
     applyChangeMeta(data)
     demoView.value = 'preview'
     outputTab.value = 'demo'
@@ -384,7 +415,7 @@ function resetAll() {
   })
   resetSpecEditor()
   Object.assign(iterationForm, { change_type: 'clarify_flow', target_module: 'demo', affected_pages: [], instruction: '' })
-  Object.assign(result, { prd: '', demoHtml: '', prototypeOutline: '', consistency: null, changeSummary: '', changedSections: [], affectedPages: [] })
+  Object.assign(result, { prd: '', demoHtml: '', prototypeOutline: '', demoQuality: null, consistency: null, changeSummary: '', changedSections: [], affectedPages: [] })
   outputTab.value = 'prd'
   demoView.value = 'preview'
   ElMessage.success('已清空当前工作区。')
@@ -494,9 +525,96 @@ onMounted(() => {
 
         <div v-if="loadingAction" class="empty"><el-icon class="spin"><Connection /></el-icon><span>正在处理内容，请稍候。</span></div>
         <div v-else-if="outputTab === 'prd'" class="result-panel"><div v-if="result.prd" class="markdown-body" v-html="renderedPrd"></div><div v-else class="empty">先完成需求摘要，再生成 PRD。</div></div>
-        <div v-else-if="outputTab === 'demo'" class="result-panel"><div v-if="result.demoHtml"><div class="toolbar output-toolbar"><div class="tab-wrap"><el-radio-group v-model="demoView" size="small"><el-radio-button value="preview">预览</el-radio-button><el-radio-button value="code">HTML</el-radio-button></el-radio-group></div><div class="toolbar-actions"><el-button size="small" @click="downloadDemo">下载 HTML</el-button></div></div><iframe v-if="demoView === 'preview'" :srcdoc="result.demoHtml" class="demo-frame" title="Demo preview"></iframe><pre v-else class="code-block">{{ result.demoHtml }}</pre></div><div v-else class="empty">生成 Demo 后，这里会展示可直接评审和下载的原型页面。</div></div>
+        <div v-else-if="outputTab === 'demo'" class="result-panel">
+          <div v-if="result.demoHtml">
+            <div v-if="result.demoQuality" class="quality-banner">
+              <div class="score">
+                <div>
+                  <p class="muted">Demo 质量门禁</p>
+                  <h3>{{ statusText(result.demoQuality.status) }}</h3>
+                </div>
+                <strong>{{ result.demoQuality.score }}</strong>
+              </div>
+              <div class="quality-meta">
+                <span>HTML：{{ result.demoQuality.html_complete ? '完整' : '不完整' }}</span>
+                <span>按钮：{{ result.demoQuality.button_count }}</span>
+                <span>交互信号：{{ result.demoQuality.interaction_signals }}</span>
+                <span v-if="result.demoQuality.auto_repair_applied">已自动修复一次</span>
+              </div>
+              <p v-if="result.demoQuality.issues?.length" class="quality-note">
+                {{ result.demoQuality.issues[0].title }}：{{ result.demoQuality.issues[0].evidence || result.demoQuality.issues[0].description }}
+              </p>
+            </div>
+            <div class="toolbar output-toolbar">
+              <div class="tab-wrap">
+                <el-radio-group v-model="demoView" size="small">
+                  <el-radio-button value="preview">预览</el-radio-button>
+                  <el-radio-button value="code">HTML</el-radio-button>
+                </el-radio-group>
+              </div>
+              <div class="toolbar-actions">
+                <el-button size="small" @click="downloadDemo">下载 HTML</el-button>
+              </div>
+            </div>
+            <iframe v-if="demoView === 'preview'" :srcdoc="result.demoHtml" class="demo-frame" title="Demo preview"></iframe>
+            <pre v-else class="code-block">{{ result.demoHtml }}</pre>
+          </div>
+          <div v-else class="empty">生成 Demo 后，这里会展示可直接评审和下载的原型页面。</div>
+        </div>
         <div v-else-if="outputTab === 'outline'" class="result-panel"><div v-if="result.prototypeOutline" class="markdown-body" v-html="renderedOutline"></div><div v-else class="empty">生成 Demo 后，这里会展示页面结构、操作路径和验证目标。</div></div>
-        <div v-else class="result-panel"><div v-if="result.consistency" class="consistency"><div class="score"><div><p class="muted">一致性等级</p><h3>{{ result.consistency.overall_level }}</h3></div><strong>{{ result.consistency.score }}</strong></div><div class="check-list"><article v-for="item in result.consistency.checks" :key="item.id" class="check-item"><div class="between"><h4>{{ item.label }}</h4><span :class="['chip', item.status]">{{ item.status }}</span></div><p>{{ item.summary }}</p><p v-if="item.missing.length" class="muted">缺失项：{{ item.missing.join('、') }}</p></article></div><div class="cols"><div><h4>问题列表</h4><ul v-if="result.consistency.issues.length" class="plain-list"><li v-for="issue in result.consistency.issues" :key="`${issue.title}-${issue.description}`"><strong>{{ issue.title }}</strong><span>（{{ issue.severity }}）{{ issue.description }}</span></li></ul><p v-else class="muted">当前未发现明显一致性缺口。</p></div><div><h4>修复建议</h4><div v-if="result.consistency.repair_suggestions.length" class="suggestions"><button v-for="suggestion in result.consistency.repair_suggestions" :key="suggestion" type="button" class="suggestion" @click="applyRepairSuggestion(suggestion)">{{ suggestion }}</button></div><p v-else class="muted">当前没有额外修复建议。</p></div></div></div><div v-else class="empty">点击“运行检查”后，这里会展示产物之间的一致性结果。</div></div>
+        <div v-else class="result-panel">
+          <div v-if="result.consistency" class="consistency">
+            <div class="score">
+              <div>
+                <p class="muted">一致性等级</p>
+                <h3>{{ result.consistency.overall_level }}</h3>
+              </div>
+              <strong>{{ result.consistency.score }}</strong>
+            </div>
+            <div class="check-list">
+              <article v-for="item in result.consistency.checks" :key="item.id" class="check-item">
+                <div class="between">
+                  <h4>{{ item.label }}</h4>
+                  <span :class="['chip', item.status]">{{ item.status }}</span>
+                </div>
+                <p>{{ item.summary }}</p>
+                <p v-if="item.evidence" class="muted">证据：{{ item.evidence }}</p>
+                <p v-if="item.missing.length" class="muted">缺失项：{{ item.missing.join('、') }}</p>
+              </article>
+            </div>
+            <div class="cols">
+              <div>
+                <h4>问题列表</h4>
+                <ul v-if="result.consistency.issues.length" class="plain-list">
+                  <li v-for="issue in result.consistency.issues" :key="`${issue.type}-${issue.title}-${issue.description}`">
+                    <strong>{{ issue.title }}</strong>
+                    <span>（{{ issue.severity }}）{{ issue.description }}</span>
+                    <p v-if="issue.evidence" class="muted">证据：{{ issue.evidence }}</p>
+                    <p v-if="issue.suggestion" class="muted">建议：{{ issue.suggestion }}</p>
+                  </li>
+                </ul>
+                <p v-else class="muted">当前未发现明显一致性缺口。</p>
+              </div>
+              <div>
+                <h4>修复建议</h4>
+                <div v-if="result.consistency.repair_actions?.length" class="suggestions">
+                  <button
+                    v-for="action in result.consistency.repair_actions"
+                    :key="`${action.type}-${action.label}-${action.change_type}`"
+                    type="button"
+                    class="suggestion"
+                    @click="applyRepairSuggestion(action)"
+                  >
+                    <strong>{{ action.label }}</strong>
+                    <span>{{ action.instruction }}</span>
+                  </button>
+                </div>
+                <p v-else class="muted">当前没有额外修复建议。</p>
+              </div>
+            </div>
+          </div>
+          <div v-else class="empty">点击“运行检查”后，这里会展示产物之间的一致性结果。</div>
+        </div>
       </section>
     </main>
 
@@ -621,14 +739,20 @@ onMounted(() => {
 .score, .check-item { border: 1px solid rgba(27, 44, 42, 0.1); background: rgba(255, 255, 255, 0.75); border-radius: 18px; padding: 16px 18px; }
 .score { display: flex; justify-content: space-between; align-items: center; background: linear-gradient(135deg, rgba(219,109,47,0.12), rgba(42,157,143,0.12)); }
 .score strong { font-size: 2.2rem; color: var(--accent-700); }
+.quality-banner { display: grid; gap: 12px; margin-bottom: 14px; border: 1px solid rgba(27, 44, 42, 0.1); border-radius: 18px; padding: 16px 18px; background: linear-gradient(135deg, rgba(42, 157, 143, 0.08), rgba(219, 109, 47, 0.08)); }
+.quality-meta { display: flex; flex-wrap: wrap; gap: 10px; color: var(--ink-700); font-size: 13px; }
+.quality-meta span { padding: 6px 10px; border-radius: 999px; background: rgba(255,255,255,0.68); border: 1px solid rgba(27, 44, 42, 0.08); }
+.quality-note { margin: 0; color: var(--ink-700); line-height: 1.7; }
 .chip { display: inline-flex; min-width: 68px; justify-content: center; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; text-transform: uppercase; }
 .chip.pass { background: rgba(42,157,143,0.14); color: #1f6f64; }
 .chip.warning { background: rgba(255,183,77,0.18); color: #9c6400; }
 .chip.fail { background: rgba(219,109,47,0.16); color: #a44912; }
 .plain-list { padding-left: 18px; }
 .plain-list li + li { margin-top: 10px; }
-.suggestions { display: flex; flex-wrap: wrap; gap: 10px; }
-.suggestion { border: 1px solid rgba(27, 44, 42, 0.12); border-radius: 999px; background: rgba(255,255,255,0.85); padding: 10px 14px; cursor: pointer; }
+.suggestions { display: grid; gap: 10px; }
+.suggestion { border: 1px solid rgba(27, 44, 42, 0.12); border-radius: 16px; background: rgba(255,255,255,0.85); padding: 12px 14px; cursor: pointer; text-align: left; display: grid; gap: 6px; justify-items: start; }
+.suggestion strong { font-size: 14px; color: var(--ink-900); }
+.suggestion span { color: var(--ink-700); line-height: 1.55; }
 .dialog-copy { margin: 0 0 18px; color: var(--ink-600); line-height: 1.7; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
 :deep(.el-form-item__label) { font-weight: 600; color: var(--ink-800); }
