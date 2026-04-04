@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - codex/**
+  pull_request:
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend dependencies
+        working-directory: prd-pilot/backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run pytest
+        env:
+          PRD_PILOT_USE_MOCK_LLM: "1"
+        working-directory: prd-pilot/backend
+        run: pytest tests -q
+
+  frontend-build-and-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: prd-pilot/frontend/package-lock.json
+      - name: Install backend dependencies
+        working-directory: prd-pilot/backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Install frontend dependencies
+        working-directory: prd-pilot/frontend
+        run: npm ci
+      - name: Build frontend
+        working-directory: prd-pilot/frontend
+        run: npm run build
+      - name: Install Playwright browser
+        working-directory: prd-pilot/frontend
+        run: npx playwright install --with-deps chromium
+      - name: Start mock backend
+        env:
+          PRD_PILOT_USE_MOCK_LLM: "1"
+          OPENAI_PROVIDER: deepseek
+          OPENAI_API_KEY: mock-key
+          OPENAI_BASE_URL: https://api.deepseek.com/v1
+          OPENAI_MODEL: deepseek-chat
+          APP_HOST: 127.0.0.1
+          APP_PORT: 8000
+        run: |
+          python prd-pilot/backend/main.py > /tmp/prd-pilot-backend.log 2>&1 &
+      - name: Start frontend dev server
+        env:
+          VITE_API_BASE_URL: /api
+        working-directory: prd-pilot/frontend
+        run: |
+          npm run dev -- --host 127.0.0.1 --port 5173 > /tmp/prd-pilot-vite.log 2>&1 &
+      - name: Wait for services
+        run: |
+          for i in {1..60}; do
+            curl -fsS http://127.0.0.1:8000/api/health >/dev/null && curl -fsS http://127.0.0.1:5173 >/dev/null && exit 0
+            sleep 2
+          done
+          echo "Services did not become ready in time"
+          exit 1
+      - name: Run Playwright smoke tests
+        working-directory: prd-pilot/frontend
+        env:
+          PRD_PILOT_E2E_BASE_URL: http://127.0.0.1:5173
+        run: npm run test:e2e
