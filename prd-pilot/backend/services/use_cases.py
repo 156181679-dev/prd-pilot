@@ -119,7 +119,7 @@ class PRDPilotUseCases:
             requirement_spec=requirement_spec,
             model_config=model_config,
         )
-        demo_html = await self.llm_service.generate_demo_html(
+        demo_bundle = await self.llm_service.generate_demo_html(
             requirement_spec=resolved_requirement_spec,
             prd_content=prd_content,
             model_config=self.serialize_model_config(model_config),
@@ -127,12 +127,20 @@ class PRDPilotUseCases:
         prototype_outline = await self.llm_service.generate_prototype_outline(
             requirement_spec=resolved_requirement_spec,
             prd_content=prd_content,
-            demo_html=demo_html,
+            demo_html=demo_bundle["demo_html"],
+            demo_plan=demo_bundle.get("demo_plan"),
             model_config=self.serialize_model_config(model_config),
         )
+        generation_meta = dict(demo_bundle.get("generation_meta") or {})
+        phases_completed = list(generation_meta.get("phases_completed") or [])
+        if "prototype_outline" not in phases_completed:
+            phases_completed.append("prototype_outline")
+        generation_meta["phases_completed"] = phases_completed
         return {
-            "demo_html": demo_html,
+            "demo_html": demo_bundle["demo_html"],
             "prototype_outline": prototype_outline,
+            "demo_quality": demo_bundle.get("demo_quality"),
+            "generation_meta": generation_meta,
             "requirement_spec": resolved_requirement_spec,
             "brief": self.serialize_brief(brief) if brief else None,
         }
@@ -229,7 +237,7 @@ class PRDPilotUseCases:
             change_request,
             model_config=self.serialize_model_config(model_config),
         )
-        demo_html = await self.llm_service.iterate_demo_html(
+        demo_bundle = await self.llm_service.iterate_demo_html(
             requirement_spec=revised_requirement_spec,
             current_demo_html=current_demo_html,
             change_request=change_request,
@@ -237,14 +245,22 @@ class PRDPilotUseCases:
         )
         prototype_outline = await self.llm_service.generate_prototype_outline(
             requirement_spec=revised_requirement_spec,
-            demo_html=demo_html,
+            demo_html=demo_bundle["demo_html"],
             prd_content=current_prd,
+            demo_plan=demo_bundle.get("demo_plan"),
             model_config=self.serialize_model_config(model_config),
         )
         change_meta = self.llm_service.build_change_metadata(change_request, revised_requirement_spec)
+        generation_meta = dict(demo_bundle.get("generation_meta") or {})
+        phases_completed = list(generation_meta.get("phases_completed") or [])
+        if "prototype_outline" not in phases_completed:
+            phases_completed.append("prototype_outline")
+        generation_meta["phases_completed"] = phases_completed
         return {
-            "demo_html": demo_html,
+            "demo_html": demo_bundle["demo_html"],
             "prototype_outline": prototype_outline,
+            "demo_quality": demo_bundle.get("demo_quality"),
+            "generation_meta": generation_meta,
             "requirement_spec": revised_requirement_spec,
             **change_meta,
         }

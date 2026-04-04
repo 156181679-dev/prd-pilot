@@ -24,6 +24,11 @@ prd-pilot/backend/services/__pycache__/
 .idea/
 .claude/
 output/
+/tests/
+.pytest_cache/
+mcp/__pycache__/
+prd-pilot/frontend/test-results/
+prd-pilot/frontend/playwright-report/
 
 # OS files
 .DS_Store

@@ -5,7 +5,7 @@ import { ElMessage } from 'element-plus'
 import MarkdownIt from 'markdown-it'
 import { useClipboard } from '@vueuse/core'
 
-const API_BASE = 'http://localhost:8000'
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
 const MODEL_CONFIG_STORAGE_KEY = 'prd-pilot-model-config-v1'
 const FALLBACK_MODEL_OPTIONS = {
   providers: [
@@ -33,6 +33,7 @@ const hasServerDefaultKey = ref(false)
 const modelConfigStatus = ref('')
 const testingModel = ref(false)
 const modelDefaults = ref(FALLBACK_MODEL_OPTIONS.default_config)
+let demoRequestController = null
 
 const modelConfig = reactive({ provider: 'deepseek', model: 'deepseek-chat', api_key: '', base_url: 'https://api.deepseek.com/v1', max_tokens: null })
 const quickForm = reactive({ idea: '', notes: '', stylePreference: '' })
@@ -46,7 +47,21 @@ const specEditor = reactive({
   key_features: '', primary_pages: '', user_flow: '', style_preference: '', constraints: '', success_criteria: ''
 })
 const iterationForm = reactive({ change_type: 'clarify_flow', target_module: 'demo', affected_pages: [], instruction: '' })
-const result = reactive({ prd: '', demoHtml: '', prototypeOutline: '', consistency: null, changeSummary: '', changedSections: [], affectedPages: [] })
+const result = reactive({
+  prd: '', demoHtml: '', prototypeOutline: '', demoQuality: null, consistency: null, changeSummary: '', changedSections: [], affectedPages: [],
+  generationMeta: null, demoError: null
+})
+const DEMO_REQUEST_TIMEOUT_MS = 120000
+const STAGE_LABELS = {
+  demo_plan: 'Demo 规划阶段',
+  html_render: 'HTML 渲染阶段',
+  html_completion: 'HTML 补全阶段',
+  quality_gate: '质量门禁阶段',
+  prototype_outline: '原型说明阶段',
+  demo_iteration: 'Demo 更新阶段',
+  client_abort: '请求已取消',
+  client_timeout: '请求超时'
+}
 
 const styleOptions = [
   { label: '不限定', value: '' },
@@ -127,8 +142,7 @@ function syncProviderDefaults(provider, keepModel = false) {
   const preset = modelOptions.value.find((item) => item.id === provider)
   if (!preset) return
   modelConfig.base_url = preset.base_url || ''
-  const hasCurrentModel = preset.models?.some((item) => item.id === modelConfig.model.trim())
-  if (!keepModel || !modelConfig.model.trim() || (preset.models?.length && !hasCurrentModel)) {
+  if (!keepModel || !modelConfig.model.trim()) {
     modelConfig.model = preset.models?.[0]?.id || ''
   }
 }
@@ -209,17 +223,100 @@ function validateInput() {
 }
 function formatConsistency() {
   if (!result.consistency) return ''
-  return [`一致性等级：${result.consistency.overall_level}`, `一致性评分：${result.consistency.score}`, '', ...result.consistency.checks.map((item) => `- ${item.label} [${item.status}] ${item.summary}`)].join('\n')
+  const lines = [`一致性等级：${result.consistency.overall_level}`, `一致性评分：${result.consistency.score}`, '']
+  result.consistency.checks.forEach((item) => {
+    lines.push(`- ${item.label} [${item.status}] ${item.summary}`)
+    if (item.evidence) lines.push(`  证据：${item.evidence}`)
+    if (item.missing?.length) lines.push(`  缺失：${item.missing.join('、')}`)
+  })
+  if (result.consistency.issues?.length) {
+    lines.push('', '问题列表：')
+    result.consistency.issues.forEach((issue) => {
+      lines.push(`- ${issue.title}（${issue.severity}）${issue.description}`)
+      if (issue.evidence) lines.push(`  证据：${issue.evidence}`)
+      if (issue.suggestion) lines.push(`  建议：${issue.suggestion}`)
+    })
+  }
+  return lines.join('\n')
 }
-async function callApi(path, payload) {
-  const response = await fetch(`${API_BASE}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-  const data = await response.json()
-  if (!response.ok || data.success === false) throw new Error(data.detail || data.message || '请求失败')
+function statusText(value) {
+  return { pass: '通过', warning: '警告', fail: '失败' }[value] || value || ''
+}
+function loadingText(value) {
+  return {
+    structure: '正在解析需求摘要…',
+    prd: '正在生成 PRD…',
+    demo: '正在规划并生成 Demo…',
+    consistency: '正在运行一致性检查…',
+    'iterate-prd': '正在更新 PRD…',
+    'iterate-demo': '正在更新 Demo…'
+  }[value] || '正在处理内容…'
+}
+function stageText(value) {
+  return STAGE_LABELS[value] || value || '未知阶段'
+}
+function getApiUrl(path) {
+  const normalized = path.startsWith('/') ? path : `/${path}`
+  return `${API_BASE}${normalized}`
+}
+function normalizeApiError(error) {
+  if (error?.name === 'AbortError') {
+    return { error_code: 'request_aborted', stage: 'client_abort', retryable: true, detail: '已取消当前 Demo 请求。', generation_meta: null }
+  }
+  const meta = error?.meta || {}
+  return {
+    error_code: meta.error_code || 'request_failed',
+    stage: meta.stage || '',
+    retryable: meta.retryable !== false,
+    detail: meta.detail || error?.message || '请求失败',
+    generation_meta: meta.generation_meta || null
+  }
+}
+async function callApi(path, payload, options = {}) {
+  let response
+  try {
+    response = await fetch(getApiUrl(path), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: options.signal
+    })
+  } catch (error) {
+    if (options.signal?.aborted) {
+      const reason = options.signal.reason
+      const message = reason === 'timeout'
+        ? (options.timeoutMessage || '当前请求超时，请稍后重试。')
+        : '已取消当前 Demo 请求。'
+      const requestError = new Error(message)
+      requestError.meta = {
+        error_code: reason === 'timeout' ? 'client_timeout' : 'request_aborted',
+        stage: reason === 'timeout' ? 'client_timeout' : 'client_abort',
+        retryable: true,
+        detail: message,
+        generation_meta: null
+      }
+      throw requestError
+    }
+    throw error
+  }
+  let data = {}
+  try {
+    data = await response.json()
+  } catch (error) {
+    data = {}
+  }
+  if (!response.ok || data.success === false) {
+    const detail = typeof data.detail === 'object' && data.detail ? data.detail : null
+    const message = detail?.detail || data.detail || data.message || '请求失败'
+    const requestError = new Error(message)
+    requestError.meta = detail || {}
+    throw requestError
+  }
   return data.data
 }
 async function loadModelOptions() {
   try {
-    const response = await fetch(`${API_BASE}/api/model-options`)
+    const response = await fetch(getApiUrl('/model-options'))
     const data = await response.json()
     if (response.ok && data.success) {
       modelOptions.value = data.data.providers || FALLBACK_MODEL_OPTIONS.providers
@@ -245,7 +342,7 @@ async function testModelConnection() {
   if (!validateModelConfig()) return
   testingModel.value = true
   try {
-    const data = await callApi('/api/test-model-config', { model_config: getSanitizedModelConfig() })
+    const data = await callApi('/test-model-config', { model_config: getSanitizedModelConfig() })
     modelConfigStatus.value = `连接成功：${data.provider} / ${data.model}`
     ElMessage.success('模型连接可用。')
   } catch (error) {
@@ -257,7 +354,7 @@ async function testModelConnection() {
 }
 async function ensureRequirementSpec() {
   if (hasRequirementSpec.value) return requirementSpec.value
-  const data = await callApi('/api/structure-requirement', { brief: briefPayload.value, model_config: getSanitizedModelConfig() })
+  const data = await callApi('/structure-requirement', { brief: briefPayload.value, model_config: getSanitizedModelConfig() })
   applyRequirementSpec(data.requirement_spec)
   return requirementSpec.value
 }
@@ -266,7 +363,7 @@ async function structureRequirement() {
   if (!validateModelConfig()) return
   loadingAction.value = 'structure'
   try {
-    const data = await callApi('/api/structure-requirement', { brief: briefPayload.value, model_config: getSanitizedModelConfig() })
+    const data = await callApi('/structure-requirement', { brief: briefPayload.value, model_config: getSanitizedModelConfig() })
     applyRequirementSpec(data.requirement_spec)
     ElMessage.success('需求摘要已生成。')
   } catch (error) { ElMessage.error(error.message) } finally { loadingAction.value = '' }
@@ -277,7 +374,7 @@ async function generatePrd() {
   loadingAction.value = 'prd'
   try {
     const spec = await ensureRequirementSpec()
-    const data = await callApi('/api/generate-prd', { brief: briefPayload.value, requirement_spec: spec, model_config: getSanitizedModelConfig() })
+    const data = await callApi('/generate-prd', { brief: briefPayload.value, requirement_spec: spec, model_config: getSanitizedModelConfig() })
     applyRequirementSpec(data.requirement_spec)
     result.prd = data.prd
     outputTab.value = 'prd'
@@ -287,24 +384,49 @@ async function generatePrd() {
 async function generateDemo() {
   if (!validateInput()) return
   if (!validateModelConfig()) return
+  if (demoRequestController) demoRequestController.abort('manual')
+  demoRequestController = new AbortController()
+  const timeoutId = setTimeout(() => demoRequestController?.abort('timeout'), DEMO_REQUEST_TIMEOUT_MS)
   loadingAction.value = 'demo'
   try {
     const spec = await ensureRequirementSpec()
-    const data = await callApi('/api/generate-demo', { brief: briefPayload.value, requirement_spec: spec, prd_content: result.prd || undefined, model_config: getSanitizedModelConfig() })
+    const data = await callApi('/generate-demo', {
+      brief: briefPayload.value,
+      requirement_spec: spec,
+      prd_content: result.prd || undefined,
+      model_config: getSanitizedModelConfig()
+    }, { signal: demoRequestController.signal, timeoutMessage: 'Demo 生成超时，请稍后重试或缩小需求范围。' })
     applyRequirementSpec(data.requirement_spec)
     result.demoHtml = data.demo_html
     result.prototypeOutline = data.prototype_outline
+    result.demoQuality = data.demo_quality || null
+    result.demoError = null
+    applyGenerationMeta(data)
     demoView.value = 'preview'
     outputTab.value = 'demo'
     ElMessage.success('Demo 与原型说明已生成。')
-  } catch (error) { ElMessage.error(error.message) } finally { loadingAction.value = '' }
+  } catch (error) {
+    const normalized = normalizeApiError(error)
+    result.demoHtml = ''
+    result.prototypeOutline = ''
+    result.demoQuality = null
+    result.generationMeta = normalized.generation_meta
+    result.demoError = normalized
+    outputTab.value = 'demo'
+    if (normalized.stage === 'client_abort') ElMessage.info(normalized.detail)
+    else ElMessage.error(normalized.detail)
+  } finally {
+    clearTimeout(timeoutId)
+    demoRequestController = null
+    loadingAction.value = ''
+  }
 }
 async function runConsistencyCheck() {
   if (!hasRequirementSpec.value) { ElMessage.warning('请先生成需求摘要。'); return }
   if (!result.prd && !result.demoHtml) { ElMessage.warning('请先生成 PRD 或 Demo。'); return }
   loadingAction.value = 'consistency'
   try {
-    result.consistency = await callApi('/api/check-consistency', {
+    result.consistency = await callApi('/check-consistency', {
       requirement_spec: requirementSpec.value,
       prd: result.prd,
       demo_html: result.demoHtml,
@@ -319,10 +441,28 @@ function applyChangeMeta(data) {
   result.changedSections = data.changed_sections || []
   result.affectedPages = data.affected_pages || []
 }
+function applyGenerationMeta(data) {
+  result.generationMeta = data?.generation_meta || null
+}
+function cancelDemoGeneration() {
+  if (demoRequestController) demoRequestController.abort('manual')
+}
 function applyRepairSuggestion(suggestion) {
-  iterationForm.instruction = suggestion
-  iterationForm.change_type = suggestion.includes('页面') ? 'add_page' : suggestion.includes('风格') ? 'change_style' : suggestion.includes('功能') ? 'remove_feature' : suggestion.includes('数据') ? 'improve_data_density' : 'clarify_flow'
-  iterationForm.target_module = suggestion.includes('PRD') ? 'prd' : 'demo'
+  const action = typeof suggestion === 'string'
+    ? { instruction: suggestion, change_type: '', target_module: '', affected_pages: [] }
+    : suggestion || {}
+  const instruction = action.instruction || action.suggestion || action.description || ''
+  iterationForm.instruction = instruction
+  iterationForm.change_type = action.change_type || (
+    instruction.includes('页面') ? 'add_page'
+      : instruction.includes('风格') ? 'change_style'
+        : instruction.includes('功能') ? 'remove_feature'
+          : instruction.includes('数据') ? 'improve_data_density'
+            : instruction.includes('流程') ? 'clarify_flow'
+              : 'clarify_flow'
+  )
+  iterationForm.target_module = action.target_module || (instruction.includes('PRD') ? 'prd' : 'demo')
+  iterationForm.affected_pages = Array.isArray(action.affected_pages) ? action.affected_pages : []
   ElMessage.success('修复建议已带入修改区。')
 }
 async function iteratePrd() {
@@ -331,7 +471,7 @@ async function iteratePrd() {
   if (!validateModelConfig()) return
   loadingAction.value = 'iterate-prd'
   try {
-    const data = await callApi('/api/iterate-prd', {
+    const data = await callApi('/iterate-prd', {
       model_config: getSanitizedModelConfig(),
       brief: briefPayload.value, requirement_spec: requirementSpec.value, change_type: iterationForm.change_type,
       target_module: iterationForm.target_module, affected_pages: iterationForm.affected_pages, instruction: iterationForm.instruction,
@@ -348,22 +488,39 @@ async function iterateDemo() {
   if (!result.demoHtml) { ElMessage.warning('请先生成 Demo。'); return }
   if (!iterationForm.instruction.trim()) { ElMessage.warning('请先填写本次修改说明。'); return }
   if (!validateModelConfig()) return
+  if (demoRequestController) demoRequestController.abort('manual')
+  demoRequestController = new AbortController()
+  const timeoutId = setTimeout(() => demoRequestController?.abort('timeout'), DEMO_REQUEST_TIMEOUT_MS)
   loadingAction.value = 'iterate-demo'
   try {
-    const data = await callApi('/api/iterate-demo', {
+    const data = await callApi('/iterate-demo', {
       model_config: getSanitizedModelConfig(),
       brief: briefPayload.value, requirement_spec: requirementSpec.value, change_type: iterationForm.change_type,
       target_module: iterationForm.target_module, affected_pages: iterationForm.affected_pages, instruction: iterationForm.instruction,
       current_prd: result.prd, current_demo_html: result.demoHtml, current_prototype_outline: result.prototypeOutline
-    })
+    }, { signal: demoRequestController.signal, timeoutMessage: 'Demo 更新超时，请稍后重试或缩小修改范围。' })
     applyRequirementSpec(data.requirement_spec)
     result.demoHtml = data.demo_html
     result.prototypeOutline = data.prototype_outline
+    result.demoQuality = data.demo_quality || null
+    result.demoError = null
+    applyGenerationMeta(data)
     applyChangeMeta(data)
     demoView.value = 'preview'
     outputTab.value = 'demo'
     ElMessage.success('Demo 已更新。')
-  } catch (error) { ElMessage.error(error.message) } finally { loadingAction.value = '' }
+  } catch (error) {
+    const normalized = normalizeApiError(error)
+    result.generationMeta = normalized.generation_meta || result.generationMeta
+    result.demoError = normalized
+    outputTab.value = 'demo'
+    if (normalized.stage === 'client_abort') ElMessage.info(normalized.detail)
+    else ElMessage.error(normalized.detail)
+  } finally {
+    clearTimeout(timeoutId)
+    demoRequestController = null
+    loadingAction.value = ''
+  }
 }
 async function copyCurrentArtifact() { if (!currentArtifact.value) return; await copy(currentArtifact.value); ElMessage.success('已复制当前内容。') }
 function downloadDemo() {
@@ -384,7 +541,10 @@ function resetAll() {
   })
   resetSpecEditor()
   Object.assign(iterationForm, { change_type: 'clarify_flow', target_module: 'demo', affected_pages: [], instruction: '' })
-  Object.assign(result, { prd: '', demoHtml: '', prototypeOutline: '', consistency: null, changeSummary: '', changedSections: [], affectedPages: [] })
+  Object.assign(result, {
+    prd: '', demoHtml: '', prototypeOutline: '', demoQuality: null, consistency: null, changeSummary: '', changedSections: [], affectedPages: [],
+    generationMeta: null, demoError: null
+  })
   outputTab.value = 'prd'
   demoView.value = 'preview'
   ElMessage.success('已清空当前工作区。')
@@ -492,11 +652,121 @@ onMounted(() => {
           </div>
         </div>
 
-        <div v-if="loadingAction" class="empty"><el-icon class="spin"><Connection /></el-icon><span>正在处理内容，请稍候。</span></div>
-        <div v-else-if="outputTab === 'prd'" class="result-panel"><div v-if="result.prd" class="markdown-body" v-html="renderedPrd"></div><div v-else class="empty">先完成需求摘要，再生成 PRD。</div></div>
-        <div v-else-if="outputTab === 'demo'" class="result-panel"><div v-if="result.demoHtml"><div class="toolbar output-toolbar"><div class="tab-wrap"><el-radio-group v-model="demoView" size="small"><el-radio-button value="preview">预览</el-radio-button><el-radio-button value="code">HTML</el-radio-button></el-radio-group></div><div class="toolbar-actions"><el-button size="small" @click="downloadDemo">下载 HTML</el-button></div></div><iframe v-if="demoView === 'preview'" :srcdoc="result.demoHtml" class="demo-frame" title="Demo preview"></iframe><pre v-else class="code-block">{{ result.demoHtml }}</pre></div><div v-else class="empty">生成 Demo 后，这里会展示可直接评审和下载的原型页面。</div></div>
+        <div v-if="loadingAction" class="loading-banner">
+          <div>
+            <p class="muted">当前任务</p>
+            <strong>{{ loadingText(loadingAction) }}</strong>
+          </div>
+          <el-button v-if="loadingAction === 'demo' || loadingAction === 'iterate-demo'" type="danger" plain @click="cancelDemoGeneration">取消当前请求</el-button>
+        </div>
+        <div v-if="outputTab === 'prd'" class="result-panel"><div v-if="result.prd" class="markdown-body" v-html="renderedPrd"></div><div v-else class="empty">先完成需求摘要，再生成 PRD。</div></div>
+        <div v-else-if="outputTab === 'demo'" class="result-panel">
+          <div v-if="result.demoHtml">
+            <div v-if="result.demoQuality" class="quality-banner">
+              <div class="score">
+                <div>
+                  <p class="muted">Demo 质量门禁</p>
+                  <h3>{{ statusText(result.demoQuality.status) }}</h3>
+                </div>
+                <strong>{{ result.demoQuality.score }}</strong>
+              </div>
+              <div class="quality-meta">
+                <span>HTML：{{ result.demoQuality.html_complete ? '完整' : '不完整' }}</span>
+                <span>按钮：{{ result.demoQuality.button_count }}</span>
+                <span>交互信号：{{ result.demoQuality.interaction_signals }}</span>
+                <span v-if="result.demoQuality.auto_repair_applied">已自动修复一次</span>
+              </div>
+              <div v-if="result.generationMeta?.phases_completed?.length" class="meta-list">
+                <span v-for="phase in result.generationMeta.phases_completed" :key="phase">{{ stageText(phase) }}</span>
+              </div>
+              <p v-if="result.demoQuality.issues?.length" class="quality-note">
+                {{ result.demoQuality.issues[0].title }}：{{ result.demoQuality.issues[0].evidence || result.demoQuality.issues[0].description }}
+              </p>
+            </div>
+            <div class="toolbar output-toolbar">
+              <div class="tab-wrap">
+                <el-radio-group v-model="demoView" size="small">
+                  <el-radio-button value="preview">预览</el-radio-button>
+                  <el-radio-button value="code">HTML</el-radio-button>
+                </el-radio-group>
+              </div>
+              <div class="toolbar-actions">
+                <el-button size="small" @click="downloadDemo">下载 HTML</el-button>
+              </div>
+            </div>
+            <iframe v-if="demoView === 'preview'" :srcdoc="result.demoHtml" class="demo-frame" title="Demo preview"></iframe>
+            <pre v-else class="code-block">{{ result.demoHtml }}</pre>
+          </div>
+          <div v-else-if="result.demoError" class="error-panel">
+            <div class="between">
+              <div>
+                <p class="muted">Demo 生成状态</p>
+                <h3>{{ stageText(result.demoError.stage) }}</h3>
+              </div>
+              <span :class="['chip', result.demoError.retryable ? 'warning' : 'fail']">{{ result.demoError.retryable ? '可重试' : '需处理' }}</span>
+            </div>
+            <p>{{ result.demoError.detail }}</p>
+            <p v-if="result.demoError.error_code" class="muted">错误码：{{ result.demoError.error_code }}</p>
+            <div v-if="result.generationMeta?.phases_completed?.length" class="meta-list">
+              <span v-for="phase in result.generationMeta.phases_completed" :key="`error-${phase}`">{{ stageText(phase) }}</span>
+            </div>
+          </div>
+          <div v-else class="empty">生成 Demo 后，这里会展示可直接评审和下载的原型页面。</div>
+        </div>
         <div v-else-if="outputTab === 'outline'" class="result-panel"><div v-if="result.prototypeOutline" class="markdown-body" v-html="renderedOutline"></div><div v-else class="empty">生成 Demo 后，这里会展示页面结构、操作路径和验证目标。</div></div>
-        <div v-else class="result-panel"><div v-if="result.consistency" class="consistency"><div class="score"><div><p class="muted">一致性等级</p><h3>{{ result.consistency.overall_level }}</h3></div><strong>{{ result.consistency.score }}</strong></div><div class="check-list"><article v-for="item in result.consistency.checks" :key="item.id" class="check-item"><div class="between"><h4>{{ item.label }}</h4><span :class="['chip', item.status]">{{ item.status }}</span></div><p>{{ item.summary }}</p><p v-if="item.missing.length" class="muted">缺失项：{{ item.missing.join('、') }}</p></article></div><div class="cols"><div><h4>问题列表</h4><ul v-if="result.consistency.issues.length" class="plain-list"><li v-for="issue in result.consistency.issues" :key="`${issue.title}-${issue.description}`"><strong>{{ issue.title }}</strong><span>（{{ issue.severity }}）{{ issue.description }}</span></li></ul><p v-else class="muted">当前未发现明显一致性缺口。</p></div><div><h4>修复建议</h4><div v-if="result.consistency.repair_suggestions.length" class="suggestions"><button v-for="suggestion in result.consistency.repair_suggestions" :key="suggestion" type="button" class="suggestion" @click="applyRepairSuggestion(suggestion)">{{ suggestion }}</button></div><p v-else class="muted">当前没有额外修复建议。</p></div></div></div><div v-else class="empty">点击“运行检查”后，这里会展示产物之间的一致性结果。</div></div>
+        <div v-else class="result-panel">
+          <div v-if="result.consistency" class="consistency">
+            <div class="score">
+              <div>
+                <p class="muted">一致性等级</p>
+                <h3>{{ result.consistency.overall_level }}</h3>
+              </div>
+              <strong>{{ result.consistency.score }}</strong>
+            </div>
+            <div class="check-list">
+              <article v-for="item in result.consistency.checks" :key="item.id" class="check-item">
+                <div class="between">
+                  <h4>{{ item.label }}</h4>
+                  <span :class="['chip', item.status]">{{ item.status }}</span>
+                </div>
+                <p>{{ item.summary }}</p>
+                <p v-if="item.evidence" class="muted">证据：{{ item.evidence }}</p>
+                <p v-if="item.missing.length" class="muted">缺失项：{{ item.missing.join('、') }}</p>
+              </article>
+            </div>
+            <div class="cols">
+              <div>
+                <h4>问题列表</h4>
+                <ul v-if="result.consistency.issues.length" class="plain-list">
+                  <li v-for="issue in result.consistency.issues" :key="`${issue.type}-${issue.title}-${issue.description}`">
+                    <strong>{{ issue.title }}</strong>
+                    <span>（{{ issue.severity }}）{{ issue.description }}</span>
+                    <p v-if="issue.evidence" class="muted">证据：{{ issue.evidence }}</p>
+                    <p v-if="issue.suggestion" class="muted">建议：{{ issue.suggestion }}</p>
+                  </li>
+                </ul>
+                <p v-else class="muted">当前未发现明显一致性缺口。</p>
+              </div>
+              <div>
+                <h4>修复建议</h4>
+                <div v-if="result.consistency.repair_actions?.length" class="suggestions">
+                  <button
+                    v-for="action in result.consistency.repair_actions"
+                    :key="`${action.type}-${action.label}-${action.change_type}`"
+                    type="button"
+                    class="suggestion"
+                    @click="applyRepairSuggestion(action)"
+                  >
+                    <strong>{{ action.label }}</strong>
+                    <span>{{ action.instruction }}</span>
+                  </button>
+                </div>
+                <p v-else class="muted">当前没有额外修复建议。</p>
+              </div>
+            </div>
+          </div>
+          <div v-else class="empty">点击“运行检查”后，这里会展示产物之间的一致性结果。</div>
+        </div>
       </section>
     </main>
 
@@ -607,6 +877,8 @@ onMounted(() => {
 .config-status { min-height: 46px; display: flex; align-items: center; padding: 10px 12px; border-radius: 14px; border: 1px dashed rgba(27, 44, 42, 0.14); color: var(--ink-700); background: rgba(255, 255, 255, 0.55); line-height: 1.6; }
 .result-card { min-height: 0; min-width: 0; height: 100%; }
 .result-panel { min-height: 700px; flex: 1; }
+.loading-banner { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 14px 16px; border-radius: 18px; border: 1px dashed rgba(27, 44, 42, 0.14); background: rgba(255, 255, 255, 0.68); margin-bottom: 14px; }
+.loading-banner strong { color: var(--ink-900); }
 .empty { min-height: 220px; display: flex; align-items: center; justify-content: center; text-align: center; border: 1px dashed rgba(27, 44, 42, 0.14); border-radius: 18px; background: rgba(255, 255, 255, 0.65); color: var(--ink-600); padding: 20px; }
 .result-card > .empty { flex: 1; }
 .spin { font-size: 32px; margin-right: 10px; animation: spin 1.6s linear infinite; }
@@ -621,14 +893,23 @@ onMounted(() => {
 .score, .check-item { border: 1px solid rgba(27, 44, 42, 0.1); background: rgba(255, 255, 255, 0.75); border-radius: 18px; padding: 16px 18px; }
 .score { display: flex; justify-content: space-between; align-items: center; background: linear-gradient(135deg, rgba(219,109,47,0.12), rgba(42,157,143,0.12)); }
 .score strong { font-size: 2.2rem; color: var(--accent-700); }
+.quality-banner { display: grid; gap: 12px; margin-bottom: 14px; border: 1px solid rgba(27, 44, 42, 0.1); border-radius: 18px; padding: 16px 18px; background: linear-gradient(135deg, rgba(42, 157, 143, 0.08), rgba(219, 109, 47, 0.08)); }
+.quality-meta { display: flex; flex-wrap: wrap; gap: 10px; color: var(--ink-700); font-size: 13px; }
+.quality-meta span { padding: 6px 10px; border-radius: 999px; background: rgba(255,255,255,0.68); border: 1px solid rgba(27, 44, 42, 0.08); }
+.meta-list { display: flex; flex-wrap: wrap; gap: 10px; }
+.meta-list span { padding: 6px 10px; border-radius: 999px; background: rgba(24, 50, 45, 0.08); color: var(--ink-700); font-size: 13px; }
+.quality-note { margin: 0; color: var(--ink-700); line-height: 1.7; }
 .chip { display: inline-flex; min-width: 68px; justify-content: center; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; text-transform: uppercase; }
 .chip.pass { background: rgba(42,157,143,0.14); color: #1f6f64; }
 .chip.warning { background: rgba(255,183,77,0.18); color: #9c6400; }
 .chip.fail { background: rgba(219,109,47,0.16); color: #a44912; }
+.error-panel { display: grid; gap: 12px; border: 1px solid rgba(219, 109, 47, 0.18); background: rgba(255, 247, 240, 0.92); border-radius: 18px; padding: 18px; color: var(--ink-900); }
 .plain-list { padding-left: 18px; }
 .plain-list li + li { margin-top: 10px; }
-.suggestions { display: flex; flex-wrap: wrap; gap: 10px; }
-.suggestion { border: 1px solid rgba(27, 44, 42, 0.12); border-radius: 999px; background: rgba(255,255,255,0.85); padding: 10px 14px; cursor: pointer; }
+.suggestions { display: grid; gap: 10px; }
+.suggestion { border: 1px solid rgba(27, 44, 42, 0.12); border-radius: 16px; background: rgba(255,255,255,0.85); padding: 12px 14px; cursor: pointer; text-align: left; display: grid; gap: 6px; justify-items: start; }
+.suggestion strong { font-size: 14px; color: var(--ink-900); }
+.suggestion span { color: var(--ink-700); line-height: 1.55; }
 .dialog-copy { margin: 0 0 18px; color: var(--ink-600); line-height: 1.7; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
 :deep(.el-form-item__label) { font-weight: 600; color: var(--ink-800); }

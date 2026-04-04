@@ -1,18 +1,17 @@
-﻿"""PRD Pilot backend service.
+"""PRD Pilot backend service."""
 
-Core workflow:
-input -> requirement spec -> PRD / demo / prototype outline -> consistency check -> targeted iteration.
-"""
+from __future__ import annotations
 
 import os
 from typing import List, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from services.errors import WorkflowStageError
 from services.use_cases import PRDPilotUseCases
 
 
@@ -20,15 +19,15 @@ load_dotenv()
 
 app = FastAPI(
     title="PRD Pilot API",
-    description="AI PRD and demo workspace for product managers.",
-    version="4.0.0",
+    description="AI workspace for turning vague product ideas into requirement specs, PRDs, and demo-ready HTML prototypes.",
+    version="4.2.0",
 )
 
 use_cases = PRDPilotUseCases()
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
+async def global_exception_handler(_: Request, exc: Exception):
     import traceback
 
     if isinstance(exc, HTTPException):
@@ -94,6 +93,7 @@ class ModelConfig(BaseModel):
 
 class ProductRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
+
     brief: Optional[ProductBrief] = None
     requirement_spec: Optional[RequirementSpec] = None
     prd_content: Optional[str] = None
@@ -109,6 +109,7 @@ class ConsistencyRequest(BaseModel):
 
 class IterationRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
+
     brief: Optional[ProductBrief] = None
     requirement_spec: Optional[RequirementSpec] = None
     runtime_model_config: Optional[ModelConfig] = Field(default=None, alias="model_config")
@@ -123,58 +124,19 @@ class IterationRequest(BaseModel):
 
 class RequirementOnlyRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
+
     brief: ProductBrief
     runtime_model_config: Optional[ModelConfig] = Field(default=None, alias="model_config")
 
 
 class ModelConfigRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
+
     runtime_model_config: Optional[ModelConfig] = Field(default=None, alias="model_config")
 
 
-def serialize_brief(brief: ProductBrief) -> dict:
-    return brief.model_dump()
-
-
-def serialize_requirement_spec(spec: RequirementSpec) -> dict:
-    return spec.model_dump()
-
-
-def serialize_model_config(model_config: Optional[ModelConfig]) -> Optional[dict]:
-    return model_config.model_dump() if model_config else None
-
-
-def validate_brief(brief: ProductBrief) -> None:
-    required_fields = [
-        brief.product_name,
-        brief.problem_statement,
-        brief.target_users,
-        brief.user_pain_points,
-        brief.key_scenarios,
-        brief.core_features,
-    ]
-    if not any(value.strip() for value in required_fields):
-        raise HTTPException(
-            status_code=400,
-            detail="请至少填写需求描述、产品名称、目标用户、用户痛点、核心场景或核心功能中的一项。",
-        )
-
-
-async def resolve_requirement_spec(
-    llm_service,
-    brief: Optional[ProductBrief],
-    requirement_spec: Optional[RequirementSpec],
-    model_config: Optional[ModelConfig] = None,
-) -> dict:
-    if requirement_spec:
-        return serialize_requirement_spec(requirement_spec)
-    if not brief:
-        raise HTTPException(status_code=400, detail="缺少 brief 或 requirement_spec，无法继续处理。")
-    validate_brief(brief)
-    return await llm_service.structure_requirement(
-        serialize_brief(brief),
-        model_config=serialize_model_config(model_config),
-    )
+def raise_stage_http_exception(exc: WorkflowStageError) -> None:
+    raise HTTPException(status_code=exc.status_code, detail=exc.to_payload())
 
 
 @app.get("/")
@@ -196,7 +158,7 @@ async def model_options():
 async def test_llm():
     try:
         brief = {
-            "product_name": "验证助手",
+            "product_name": "评审助手",
             "product_type": "Web 工具",
             "problem_statement": "帮助缺乏设计资源的产品同学快速整理需求并生成可演示方案。",
             "target_users": "学生产品经理、独立开发者",
@@ -237,11 +199,7 @@ async def structure_requirement(request: RequirementOnlyRequest):
             request.brief,
             model_config=request.runtime_model_config,
         )
-        return {
-            "success": True,
-            "data": result,
-            "message": "需求摘要解析成功",
-        }
+        return {"success": True, "data": result, "message": "需求摘要解析成功"}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -256,11 +214,7 @@ async def generate_prd(request: ProductRequest):
             requirement_spec=request.requirement_spec,
             model_config=request.runtime_model_config,
         )
-        return {
-            "success": True,
-            "data": result,
-            "message": "PRD 生成成功",
-        }
+        return {"success": True, "data": result, "message": "PRD 生成成功"}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -276,11 +230,9 @@ async def generate_demo(request: ProductRequest):
             prd_content=request.prd_content,
             model_config=request.runtime_model_config,
         )
-        return {
-            "success": True,
-            "data": result,
-            "message": "Demo 生成成功",
-        }
+        return {"success": True, "data": result, "message": "Demo 生成成功"}
+    except WorkflowStageError as exc:
+        raise_stage_http_exception(exc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -296,11 +248,7 @@ async def check_consistency(request: ConsistencyRequest):
             demo_html=request.demo_html,
             prototype_outline=request.prototype_outline,
         )
-        return {
-            "success": True,
-            "data": report,
-            "message": "一致性检查完成",
-        }
+        return {"success": True, "data": report, "message": "一致性检查完成"}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -320,11 +268,7 @@ async def iterate_prd(request: IterationRequest):
             instruction=request.instruction,
             model_config=request.runtime_model_config,
         )
-        return {
-            "success": True,
-            "data": result,
-            "message": "PRD 更新成功",
-        }
+        return {"success": True, "data": result, "message": "PRD 更新成功"}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -345,11 +289,9 @@ async def iterate_demo(request: IterationRequest):
             instruction=request.instruction,
             model_config=request.runtime_model_config,
         )
-        return {
-            "success": True,
-            "data": result,
-            "message": "Demo 更新成功",
-        }
+        return {"success": True, "data": result, "message": "Demo 更新成功"}
+    except WorkflowStageError as exc:
+        raise_stage_http_exception(exc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -362,5 +304,3 @@ if __name__ == "__main__":
     host = os.getenv("APP_HOST", "0.0.0.0")
     port = int(os.getenv("APP_PORT", 8000))
     uvicorn.run(app, host=host, port=port)
-
-

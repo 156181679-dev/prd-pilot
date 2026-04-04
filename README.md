@@ -1,6 +1,6 @@
 # PRD Pilot
 
-> AI workspace for product managers to turn ideas into Requirement Specs, PRDs, demo-ready HTML prototypes, and targeted iteration plans.
+> AI workspace for product managers to turn vague ideas into Requirement Specs, PRDs, demo-ready HTML prototypes, consistency reports, and targeted iteration plans.
 
 [中文文档](docs/README.zh-CN.md)
 
@@ -8,13 +8,15 @@
 
 ## What It Solves
 
-Most AI generators can output a PRD or a mockup quickly, but the result often breaks during review:
+PRD Pilot is built for product managers, indie builders, and small teams that need to move from a vague idea to a reviewable solution quickly.
+
+Most generators can output a PRD or a mockup, but the workflow usually breaks when:
 
 - the PRD and demo drift apart
 - key pages or flows go missing
 - feedback turns into a full rewrite
 
-PRD Pilot keeps one shared `Requirement Spec` across generation, validation, and iteration so product ideas can move from vague input to reviewable output with less drift.
+PRD Pilot keeps one shared `Requirement Spec` through generation, validation, and iteration so the output stays aligned.
 
 ## Preview
 
@@ -25,6 +27,114 @@ PRD Pilot keeps one shared `Requirement Spec` across generation, validation, and
 | PRD Draft | Targeted Iteration | Home Workspace |
 | --- | --- | --- |
 | ![PRD output](docs/screenshots/prd-output.png) | ![Targeted iteration](docs/screenshots/targeted-iteration.png) | ![Home overview](docs/screenshots/home-overview.png) |
+
+## Core Workflow
+
+```mermaid
+flowchart LR
+    A["Input idea"] --> B["Structure Requirement Spec"]
+    B --> C["Generate PRD"]
+    B --> D["Generate Demo plan + HTML"]
+    B --> E["Generate Prototype Outline"]
+    D --> F["Demo quality gate"]
+    C --> G["Consistency Check"]
+    E --> G
+    F --> G
+    G --> H["Targeted Iteration"]
+    H --> B
+```
+
+## Key Capabilities
+
+### Shared Requirement Spec
+
+PRD Pilot first structures user input into a single internal spec:
+
+- `product_name`
+- `product_type`
+- `target_users`
+- `user_pain_points`
+- `core_scenarios`
+- `key_features`
+- `primary_pages`
+- `user_flow`
+- `style_preference`
+- `constraints`
+- `success_criteria`
+
+This spec becomes the source of truth for generation, checks, and iteration.
+
+### PRD + Demo + Prototype Outline
+
+- `PRD`: Chinese Markdown draft for review
+- `Demo`: single-file HTML prototype for preview and download
+- `Prototype Outline`: structure, flow, and validation goals
+
+### Demo Quality Gate
+
+The demo pipeline now validates:
+
+- HTML completeness
+- key button presence
+- interaction signals
+- main page connectivity
+- result and feedback state coverage
+
+If quality fails, PRD Pilot attempts one repair pass before returning a structured error.
+
+### Consistency Check v2
+
+Built-in checks cover:
+
+- page coverage
+- feature coverage
+- flow connectivity
+- naming consistency
+- prototype alignment
+- scenario coverage
+
+Reports include:
+
+- severity
+- evidence
+- issue list
+- repair actions that can be mapped into targeted iteration
+
+### Targeted Iteration
+
+Instead of regenerating everything, PRD Pilot supports scoped updates such as:
+
+- add page
+- modify user
+- remove feature
+- adjust layout
+- change style
+- improve data density
+- simplify PRD
+- clarify flow
+
+Each iteration returns:
+
+- `change_summary`
+- `changed_sections`
+- `affected_pages`
+
+### External Integrations
+
+PRD Pilot now officially includes:
+
+- thin MCP service in [`mcp/`](mcp/README.md)
+- Claude Code skill in [`.claude/skills/prd-pilot/SKILL.md`](.claude/skills/prd-pilot/SKILL.md)
+- shared `use_cases` layer used by Web API, MCP, and tests
+
+See [docs/integration.md](docs/integration.md) for setup details.
+
+## Examples
+
+Standard cases are included in [`prd-pilot/docs/examples/`](prd-pilot/docs/examples/README.md):
+
+- [Campus Secondhand Marketplace](prd-pilot/docs/examples/campus-secondhand-marketplace.md)
+- [AI Resume Optimizer](prd-pilot/docs/examples/ai-resume-optimizer.md)
 
 ## Quick Start
 
@@ -45,7 +155,7 @@ OPENAI_API_KEY=your_deepseek_api_key_here
 OPENAI_BASE_URL=https://api.deepseek.com/v1
 OPENAI_MODEL=deepseek-chat
 OPENAI_MAX_TOKENS=0
-APP_HOST=0.0.0.0
+APP_HOST=127.0.0.1
 APP_PORT=8000
 ```
 
@@ -57,106 +167,12 @@ npm install
 npm run dev
 ```
 
+The frontend reads `VITE_API_BASE_URL` if you want to override the default `/api` path. In local dev, Vite proxies `/api` to `http://127.0.0.1:8000`.
+
 ### 3. Open the app
 
-- Frontend: [http://localhost:5173](http://localhost:5173)
-- Backend health: [http://localhost:8000/api/health](http://localhost:8000/api/health)
-
-## Core Features
-
-### Shared Requirement Spec
-
-PRD Pilot first structures user input into a single internal spec:
-
-- `product_name`
-- `product_type`
-- `target_users`
-- `user_pain_points`
-- `core_scenarios`
-- `key_features`
-- `primary_pages`
-- `user_flow`
-- `style_preference`
-- `constraints`
-- `success_criteria`
-
-This spec becomes the shared source of truth for every later step.
-
-### PRD, Demo, and Prototype Outline
-
-- `PRD`: Chinese Markdown draft for requirement review
-- `Demo`: single-file HTML prototype for direct preview and download
-- `Prototype Outline`: page structure, flow, and validation goals
-
-### Consistency Check
-
-Built-in checks cover:
-
-- page coverage
-- feature coverage
-- flow connectivity
-- naming consistency
-- prototype alignment
-- scenario coverage
-
-### Targeted Iteration
-
-Instead of regenerating everything, PRD Pilot supports scoped updates such as:
-
-- add page
-- modify user
-- remove feature
-- adjust layout
-- change style
-- improve data density
-- simplify PRD
-- clarify flow
-
-Each iteration returns a short change summary.
-
-### In-Browser Model Configuration
-
-The UI supports page-level model configuration for OpenAI-compatible APIs:
-
-- provider
-- model name
-- API key
-- base URL
-- max tokens (optional; blank means auto)
-
-Built-in presets:
-
-- DeepSeek
-- OpenAI
-- OpenRouter
-- Zhipu / GLM
-- SiliconFlow
-- Moonshot
-- Groq
-- DashScope / Qwen
-- Ollama (Local)
-- Custom OpenAI Compatible
-
-## Workflow
-
-```mermaid
-flowchart LR
-    A[Input Idea] --> B[Structure Requirement Spec]
-    B --> C[Generate PRD]
-    B --> D[Generate Demo HTML]
-    B --> E[Generate Prototype Outline]
-    C --> F[Consistency Check]
-    D --> F
-    E --> F
-    F --> G[Targeted Iteration]
-    G --> B
-```
-
-## Who It's For
-
-- student product managers who need to prepare requirement reviews quickly
-- indie developers who need reviewable specs and demo-ready prototypes
-- small teams without dedicated design or frontend prototyping support
+- Frontend: [http://127.0.0.1:5173](http://127.0.0.1:5173)
+- Backend health: [http://127.0.0.1:8000/api/health](http://127.0.0.1:8000/api/health)
 
 ## API
 
@@ -171,11 +187,25 @@ flowchart LR
 - `GET /api/health`
 - `GET /api/test-llm`
 
-## Integration Surface
+`generate-demo` and `iterate-demo` now return:
 
-- MCP / client setup: [docs/integration.md](docs/integration.md)
-- Local MCP server entry: [mcp/mcp_service.py](mcp/mcp_service.py)
-- Claude Code Skill: [.claude/skills/prd-pilot/SKILL.md](.claude/skills/prd-pilot/SKILL.md)
+- `demo_quality`
+- `generation_meta`
+
+Structured demo-stage failures return:
+
+- `error_code`
+- `stage`
+- `retryable`
+- `detail`
+
+## Tests and CI
+
+The repository now includes:
+
+- backend `pytest` coverage for `use_cases`, structured demo errors, and consistency output
+- Playwright smoke coverage for the web happy path and demo timeout path
+- GitHub Actions workflow for backend tests, frontend build, and browser smoke tests
 
 ## Tech Stack
 
@@ -187,6 +217,7 @@ flowchart LR
 - Tailwind CSS
 - MarkdownIt
 - VueUse
+- Playwright
 
 ### Backend
 
@@ -194,35 +225,45 @@ flowchart LR
 - OpenAI-compatible API client
 - Pydantic
 - Python Dotenv
+- FastMCP / MCP
+- Pytest
 
 ## Project Structure
 
 ```text
 .
-├─ prd-pilot/
-│  ├─ backend/
-│  │  ├─ main.py
-│  │  ├─ requirements.txt
-│  │  └─ services/
-│  │     └─ llm_service.py
-│  └─ frontend/
-│     ├─ src/
-│     │  └─ App.vue
-│     ├─ package.json
-│     └─ vite.config.js
-├─ docs/
-│  ├─ README.zh-CN.md
-│  └─ screenshots/
-├─ README.md
-└─ LICENSE
++-- prd-pilot/
+|   +-- backend/
+|   |   +-- main.py
+|   |   +-- requirements.txt
+|   |   +-- services/
+|   |   |   +-- llm_service.py
+|   |   |   +-- use_cases.py
+|   |   |   +-- mock_llm_service.py
+|   |   +-- tests/
+|   +-- frontend/
+|   |   +-- src/
+|   |   |   +-- App.vue
+|   |   +-- tests/e2e/
+|   |   +-- package.json
+|   |   +-- vite.config.js
++-- mcp/
++-- docs/
+|   +-- README.zh-CN.md
+|   +-- integration.md
+|   +-- screenshots/
++-- .claude/skills/prd-pilot/
++-- .github/workflows/
++-- README.md
++-- LICENSE
 ```
 
 ## Current Scope
 
 - prototype output is `HTML Demo + Prototype Outline`
-- no image-based prototype generation yet
-- no persistent version rollback yet
-- consistency check v1 is rule-based, not AI-score-driven
+- consistency checks are rule-based, not AI-score-driven
+- targeted iteration is scoped, but not yet a persistent version system
+- no image-based prototype generation
 
 ## License
 
