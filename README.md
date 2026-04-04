@@ -11,6 +11,10 @@
 
 ![PRD Pilot cover](docs/screenshots/readme-cover.png)
 
+## Demo Flow
+
+![PRD Pilot demo flow](docs/screenshots/prd-pilot-demo.gif)
+
 ## What It Solves
 
 PRD Pilot is built for product managers, indie builders, and small teams that need to move from a vague idea to a reviewable solution quickly.
