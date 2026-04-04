@@ -171,6 +171,12 @@ flowchart LR
 - `GET /api/health`
 - `GET /api/test-llm`
 
+## Integration Surface
+
+- MCP / client setup: [docs/integration.md](docs/integration.md)
+- Local MCP server entry: [mcp/mcp_service.py](mcp/mcp_service.py)
+- Claude Code Skill: [.claude/skills/prd-pilot/SKILL.md](.claude/skills/prd-pilot/SKILL.md)
+
 ## Tech Stack
 
 ### Frontend

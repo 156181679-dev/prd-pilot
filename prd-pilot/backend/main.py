@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from services.llm_service import get_llm_service, get_model_options
+from services.use_cases import PRDPilotUseCases
 
 
 load_dotenv()
@@ -23,6 +23,8 @@ app = FastAPI(
     description="AI PRD and demo workspace for product managers.",
     version="4.0.0",
 )
+
+use_cases = PRDPilotUseCases()
 
 
 @app.exception_handler(Exception)
@@ -187,13 +189,12 @@ async def health_check():
 
 @app.get("/api/model-options")
 async def model_options():
-    return {"success": True, "data": get_model_options()}
+    return {"success": True, "data": use_cases.get_model_options()}
 
 
 @app.get("/api/test-llm")
 async def test_llm():
     try:
-        llm = get_llm_service()
         brief = {
             "product_name": "验证助手",
             "product_type": "Web 工具",
@@ -204,8 +205,8 @@ async def test_llm():
             "core_features": "需求结构化、PRD 生成、Demo 生成、一致性检查",
             "tech_stack": "后台管理台",
         }
-        requirement_spec = await llm.structure_requirement(brief)
-        result = await llm.generate_prd(requirement_spec)
+        requirement_spec = await use_cases.llm_service.structure_requirement(brief)
+        result = await use_cases.llm_service.generate_prd(requirement_spec)
         return {
             "status": "success",
             "message": "LLM connection is healthy",
@@ -221,8 +222,7 @@ async def test_llm():
 @app.post("/api/test-model-config")
 async def test_model_config(request: ModelConfigRequest):
     try:
-        llm = get_llm_service()
-        result = llm.test_model_config(serialize_model_config(request.runtime_model_config))
+        result = use_cases.test_model_config(request.runtime_model_config)
         return {"success": True, "data": result, "message": "模型连接测试成功"}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -232,20 +232,14 @@ async def test_model_config(request: ModelConfigRequest):
 
 @app.post("/api/structure-requirement")
 async def structure_requirement(request: RequirementOnlyRequest):
-    validate_brief(request.brief)
-
     try:
-        llm_service = get_llm_service()
-        requirement_spec = await llm_service.structure_requirement(
-            serialize_brief(request.brief),
-            model_config=serialize_model_config(request.runtime_model_config),
+        result = await use_cases.structure_requirement(
+            request.brief,
+            model_config=request.runtime_model_config,
         )
         return {
             "success": True,
-            "data": {
-                "requirement_spec": requirement_spec,
-                "brief": serialize_brief(request.brief),
-            },
+            "data": result,
             "message": "需求摘要解析成功",
         }
     except ValueError as exc:
@@ -257,24 +251,14 @@ async def structure_requirement(request: RequirementOnlyRequest):
 @app.post("/api/generate-prd")
 async def generate_prd(request: ProductRequest):
     try:
-        llm_service = get_llm_service()
-        requirement_spec = await resolve_requirement_spec(
-            llm_service,
-            request.brief,
-            request.requirement_spec,
-            request.runtime_model_config,
-        )
-        prd_content = await llm_service.generate_prd(
-            requirement_spec,
-            model_config=serialize_model_config(request.runtime_model_config),
+        result = await use_cases.generate_prd(
+            brief=request.brief,
+            requirement_spec=request.requirement_spec,
+            model_config=request.runtime_model_config,
         )
         return {
             "success": True,
-            "data": {
-                "prd": prd_content,
-                "requirement_spec": requirement_spec,
-                "brief": serialize_brief(request.brief) if request.brief else None,
-            },
+            "data": result,
             "message": "PRD 生成成功",
         }
     except ValueError as exc:
@@ -286,32 +270,15 @@ async def generate_prd(request: ProductRequest):
 @app.post("/api/generate-demo")
 async def generate_demo(request: ProductRequest):
     try:
-        llm_service = get_llm_service()
-        requirement_spec = await resolve_requirement_spec(
-            llm_service,
-            request.brief,
-            request.requirement_spec,
-            request.runtime_model_config,
-        )
-        demo_html = await llm_service.generate_demo_html(
-            requirement_spec=requirement_spec,
+        result = await use_cases.generate_demo(
+            brief=request.brief,
+            requirement_spec=request.requirement_spec,
             prd_content=request.prd_content,
-            model_config=serialize_model_config(request.runtime_model_config),
-        )
-        prototype_outline = await llm_service.generate_prototype_outline(
-            requirement_spec=requirement_spec,
-            prd_content=request.prd_content,
-            demo_html=demo_html,
-            model_config=serialize_model_config(request.runtime_model_config),
+            model_config=request.runtime_model_config,
         )
         return {
             "success": True,
-            "data": {
-                "demo_html": demo_html,
-                "prototype_outline": prototype_outline,
-                "requirement_spec": requirement_spec,
-                "brief": serialize_brief(request.brief) if request.brief else None,
-            },
+            "data": result,
             "message": "Demo 生成成功",
         }
     except ValueError as exc:
@@ -322,13 +289,9 @@ async def generate_demo(request: ProductRequest):
 
 @app.post("/api/check-consistency")
 async def check_consistency(request: ConsistencyRequest):
-    if not request.prd.strip() and not request.demo_html.strip():
-        raise HTTPException(status_code=400, detail="请至少提供 PRD 或 Demo 内容用于一致性检查。")
-
     try:
-        llm_service = get_llm_service()
-        report = llm_service.check_consistency(
-            requirement_spec=serialize_requirement_spec(request.requirement_spec),
+        report = await use_cases.check_consistency(
+            requirement_spec=request.requirement_spec,
             prd=request.prd,
             demo_html=request.demo_html,
             prototype_outline=request.prototype_outline,
@@ -346,44 +309,20 @@ async def check_consistency(request: ConsistencyRequest):
 
 @app.post("/api/iterate-prd")
 async def iterate_prd(request: IterationRequest):
-    if not request.instruction.strip():
-        raise HTTPException(status_code=400, detail="请填写本次修改说明。")
-    if not request.current_prd or not request.current_prd.strip():
-        raise HTTPException(status_code=400, detail="当前 PRD 内容不能为空。")
-
     try:
-        llm_service = get_llm_service()
-        requirement_spec = await resolve_requirement_spec(
-            llm_service,
-            request.brief,
-            request.requirement_spec,
-            request.runtime_model_config,
+        result = await use_cases.iterate_prd(
+            brief=request.brief,
+            requirement_spec=request.requirement_spec,
+            current_prd=request.current_prd or "",
+            change_type=request.change_type,
+            target_module=request.target_module,
+            affected_pages=request.affected_pages,
+            instruction=request.instruction,
+            model_config=request.runtime_model_config,
         )
-        change_request = {
-            "change_type": request.change_type,
-            "target_module": request.target_module or "prd",
-            "affected_pages": request.affected_pages,
-            "instruction": request.instruction,
-        }
-        revised_requirement_spec = await llm_service.revise_requirement_spec(
-            requirement_spec,
-            change_request,
-            model_config=serialize_model_config(request.runtime_model_config),
-        )
-        prd_content = await llm_service.iterate_prd(
-            requirement_spec=revised_requirement_spec,
-            current_prd=request.current_prd,
-            change_request=change_request,
-            model_config=serialize_model_config(request.runtime_model_config),
-        )
-        change_meta = llm_service.build_change_metadata(change_request, revised_requirement_spec)
         return {
             "success": True,
-            "data": {
-                "prd": prd_content,
-                "requirement_spec": revised_requirement_spec,
-                **change_meta,
-            },
+            "data": result,
             "message": "PRD 更新成功",
         }
     except ValueError as exc:
@@ -394,51 +333,21 @@ async def iterate_prd(request: IterationRequest):
 
 @app.post("/api/iterate-demo")
 async def iterate_demo(request: IterationRequest):
-    if not request.instruction.strip():
-        raise HTTPException(status_code=400, detail="请填写本次修改说明。")
-    if not request.current_demo_html or not request.current_demo_html.strip():
-        raise HTTPException(status_code=400, detail="当前 Demo 内容不能为空。")
-
     try:
-        llm_service = get_llm_service()
-        requirement_spec = await resolve_requirement_spec(
-            llm_service,
-            request.brief,
-            request.requirement_spec,
-            request.runtime_model_config,
+        result = await use_cases.iterate_demo(
+            brief=request.brief,
+            requirement_spec=request.requirement_spec,
+            current_demo_html=request.current_demo_html or "",
+            current_prd=request.current_prd,
+            change_type=request.change_type,
+            target_module=request.target_module,
+            affected_pages=request.affected_pages,
+            instruction=request.instruction,
+            model_config=request.runtime_model_config,
         )
-        change_request = {
-            "change_type": request.change_type,
-            "target_module": request.target_module or "demo",
-            "affected_pages": request.affected_pages,
-            "instruction": request.instruction,
-        }
-        revised_requirement_spec = await llm_service.revise_requirement_spec(
-            requirement_spec,
-            change_request,
-            model_config=serialize_model_config(request.runtime_model_config),
-        )
-        demo_html = await llm_service.iterate_demo_html(
-            requirement_spec=revised_requirement_spec,
-            current_demo_html=request.current_demo_html,
-            change_request=change_request,
-            model_config=serialize_model_config(request.runtime_model_config),
-        )
-        prototype_outline = await llm_service.generate_prototype_outline(
-            requirement_spec=revised_requirement_spec,
-            demo_html=demo_html,
-            prd_content=request.current_prd,
-            model_config=serialize_model_config(request.runtime_model_config),
-        )
-        change_meta = llm_service.build_change_metadata(change_request, revised_requirement_spec)
         return {
             "success": True,
-            "data": {
-                "demo_html": demo_html,
-                "prototype_outline": prototype_outline,
-                "requirement_spec": revised_requirement_spec,
-                **change_meta,
-            },
+            "data": result,
             "message": "Demo 更新成功",
         }
     except ValueError as exc:
